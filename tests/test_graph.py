@@ -97,7 +97,10 @@ def test_graph_builder_adds_conservative_c_cpp_edges() -> None:
         repository_summary(
             component("C/C++ Project", "C application", "src/main.c"),
             component("C/C++ Module", "queue module", "include/queue.h", "src/queue.c"),
-            component("Executable Target", "app", "CMakeLists.txt"),
+            component("C/C++ Module", "storage module", "src/storage.c"),
+            component("Executable Target", "app", "CMakeLists.txt", "src/queue.c"),
+            component("Library Target", "storage", "CMakeLists.txt", "src/storage.c"),
+            component("Build Target", "package", "Makefile", "src/queue.c"),
             component("C/C++ Systems Pattern", "Queues", "src/queue.c"),
             component("C/C++ Systems Pattern", "Sockets", "src/server.c"),
             component("Tests", "Test Suite", "tests"),
@@ -106,8 +109,23 @@ def test_graph_builder_adds_conservative_c_cpp_edges() -> None:
 
     assert edge_pairs(graph.edges) == {
         ("c_c_project_c_application", "c_c_module_queue_module"),
+        ("c_c_project_c_application", "c_c_module_storage_module"),
         ("c_c_project_c_application", "executable_target_app"),
+        ("c_c_project_c_application", "library_target_storage"),
+        ("build_target_package", "c_c_module_queue_module"),
         ("executable_target_app", "c_c_module_queue_module"),
+        ("library_target_storage", "c_c_module_storage_module"),
         ("c_c_module_queue_module", "c_c_systems_pattern_queues"),
         ("tests_test_suite", "c_c_project_c_application"),
     }
+
+
+def test_graph_builder_does_not_connect_unmapped_targets_to_all_modules() -> None:
+    graph = build_architecture_graph(
+        repository_summary(
+            component("C/C++ Module", "queue module", "src/queue.c"),
+            component("Executable Target", "app", "CMakeLists.txt"),
+        )
+    )
+
+    assert edge_pairs(graph.edges) == set()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
@@ -58,10 +58,13 @@ C_CPP_HEADER_EXTENSIONS = {".h", ".hh", ".hpp", ".hxx"}
 C_CPP_BUILD_FILE_NAMES = {"CMakeLists.txt", "Makefile", "compile_commands.json"}
 CONVENTIONAL_C_CPP_DIRS = {"include", "lib", "src", "tests"}
 LOCAL_INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.MULTILINE)
-CMAKE_TARGET_PATTERN = re.compile(
-    r"^\s*add_(executable|library)\s*\(\s*([A-Za-z0-9_.:-]+)",
-    re.IGNORECASE | re.MULTILINE,
+CMAKE_TARGET_CALL_PATTERN = re.compile(
+    r"add_(executable|library)\s*\((?P<body>[^)]*)\)",
+    re.IGNORECASE | re.DOTALL,
 )
+CMAKE_TOKEN_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"|[^\s()]+')
+CMAKE_LIBRARY_TYPE_TOKENS = {"STATIC", "SHARED", "MODULE", "OBJECT", "INTERFACE"}
+CMAKE_OPTION_TOKENS = {"EXCLUDE_FROM_ALL", "MACOSX_BUNDLE", "WIN32"}
 C_CPP_COMMENT_OR_STRING_PATTERN = re.compile(
     r"//.*?$|/\*.*?\*/|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'",
     re.MULTILINE | re.DOTALL,
@@ -112,9 +115,20 @@ class CCppLocalInclude:
 
 
 @dataclass(frozen=True)
+class CCppResolvedInclude:
+    source: Path
+    included_path: str
+    resolved_path: Path | None
+    status: str
+
+
+@dataclass(frozen=True)
 class CCppBuildTarget:
     source: Path
     name: str
+    kind: str = "build target"
+    source_files: tuple[Path, ...] = ()
+    object_prerequisites: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -151,6 +165,7 @@ class RepositorySummary:
     c_cpp_headers: list[Path]
     c_cpp_project_shape: CCppProjectShape
     c_cpp_local_includes: list[CCppLocalInclude]
+    c_cpp_resolved_includes: list[CCppResolvedInclude]
     c_cpp_build: CCppBuildSummary
     c_cpp_systems_patterns: list[CCppSystemsPattern]
     c_cpp_cli_binary_evidence: list[CCppCliBinaryEvidence]
@@ -172,6 +187,7 @@ def scan_repository(root: Path) -> RepositorySummary:
     c_cpp_cmake_executable_targets: list[CCppBuildTarget] = []
     c_cpp_cmake_library_targets: list[CCppBuildTarget] = []
     c_cpp_local_includes: list[CCppLocalInclude] = []
+    c_cpp_resolved_includes: list[CCppResolvedInclude] = []
     c_cpp_systems_patterns: list[CCppSystemsPattern] = []
     c_cpp_cli_binary_evidence: list[CCppCliBinaryEvidence] = []
     conventional_dirs: set[Path] = set()
@@ -264,6 +280,10 @@ def scan_repository(root: Path) -> RepositorySummary:
         build_files=c_cpp_build_files,
         conventional_dirs=conventional_dirs,
     )
+    c_cpp_make_targets = map_make_target_sources(
+        targets=c_cpp_make_targets,
+        c_cpp_sources=sorted(c_cpp_sources),
+    )
     c_cpp_build = CCppBuildSummary(
         makefiles=sorted(c_cpp_makefiles),
         cmake_files=sorted(c_cpp_cmake_files),
@@ -288,6 +308,10 @@ def scan_repository(root: Path) -> RepositorySummary:
     c_cpp_local_includes = sorted(
         c_cpp_local_includes,
         key=lambda include: (include.source, include.included_path),
+    )
+    c_cpp_resolved_includes = resolve_local_includes(
+        local_includes=c_cpp_local_includes,
+        c_cpp_headers=sorted(c_cpp_headers),
     )
     c_cpp_systems_patterns = sorted(
         c_cpp_systems_patterns,
@@ -318,6 +342,7 @@ def scan_repository(root: Path) -> RepositorySummary:
         c_cpp_headers=sorted(c_cpp_headers),
         c_cpp_project_shape=c_cpp_project_shape,
         c_cpp_local_includes=c_cpp_local_includes,
+        c_cpp_resolved_includes=c_cpp_resolved_includes,
         c_cpp_build=c_cpp_build,
         c_cpp_systems_patterns=c_cpp_systems_patterns,
         c_cpp_cli_binary_evidence=c_cpp_cli_binary_evidence,
@@ -415,6 +440,139 @@ def detect_local_includes(file_path: Path, relative_path: Path) -> list[CCppLoca
     ]
 
 
+def resolve_local_includes(
+    local_includes: list[CCppLocalInclude],
+    c_cpp_headers: list[Path],
+) -> list[CCppResolvedInclude]:
+    header_paths = set(c_cpp_headers)
+    headers_by_basename: defaultdict[str, list[Path]] = defaultdict(list)
+    for header in sorted(c_cpp_headers):
+        headers_by_basename[header.name].append(header)
+
+    resolved = [
+        resolve_local_include(
+            local_include=local_include,
+            header_paths=header_paths,
+            headers_by_basename=headers_by_basename,
+        )
+        for local_include in local_includes
+    ]
+    return sorted(resolved, key=resolved_include_sort_key)
+
+
+def resolve_local_include(
+    local_include: CCppLocalInclude,
+    header_paths: set[Path],
+    headers_by_basename: dict[str, list[Path]],
+) -> CCppResolvedInclude:
+    include_path = Path(local_include.included_path)
+    if include_path.is_absolute() or not include_path.name:
+        return CCppResolvedInclude(
+            source=local_include.source,
+            included_path=local_include.included_path,
+            resolved_path=None,
+            status="unresolved",
+        )
+
+    exact_matches = sorted(
+        {
+            candidate
+            for candidate in local_include_candidates(local_include)
+            if candidate in header_paths
+        }
+    )
+    if len(exact_matches) == 1:
+        return CCppResolvedInclude(
+            source=local_include.source,
+            included_path=local_include.included_path,
+            resolved_path=exact_matches[0],
+            status="resolved",
+        )
+    if len(exact_matches) > 1:
+        return CCppResolvedInclude(
+            source=local_include.source,
+            included_path=local_include.included_path,
+            resolved_path=None,
+            status="ambiguous",
+        )
+
+    basename_matches = sorted(set(headers_by_basename.get(include_path.name, [])))
+    if len(basename_matches) == 1:
+        return CCppResolvedInclude(
+            source=local_include.source,
+            included_path=local_include.included_path,
+            resolved_path=basename_matches[0],
+            status="resolved",
+        )
+    if len(basename_matches) > 1:
+        return CCppResolvedInclude(
+            source=local_include.source,
+            included_path=local_include.included_path,
+            resolved_path=None,
+            status="ambiguous",
+        )
+
+    return CCppResolvedInclude(
+        source=local_include.source,
+        included_path=local_include.included_path,
+        resolved_path=None,
+        status="unresolved",
+    )
+
+
+def local_include_candidates(local_include: CCppLocalInclude) -> list[Path]:
+    include_path = Path(local_include.included_path)
+    candidates = [
+        local_include.source.parent / include_path,
+        include_path,
+        Path("include") / include_path,
+        Path("src") / include_path,
+        Path("lib") / include_path,
+    ]
+    normalized_candidates = [
+        normalized
+        for candidate in candidates
+        if (normalized := normalize_relative_path(candidate)) is not None
+    ]
+    return sorted(set(normalized_candidates))
+
+
+def normalize_relative_path(path: Path) -> Path | None:
+    if path.is_absolute():
+        return None
+
+    normalized = Path()
+    for part in path.parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not normalized.parts:
+                return None
+            normalized = normalized.parent
+            continue
+        normalized = normalized / part
+
+    if not normalized.parts:
+        return None
+    return normalized
+
+
+def resolved_include_sort_key(
+    resolved_include: CCppResolvedInclude,
+) -> tuple[Path, str, str, str]:
+    resolved_path = (
+        ""
+        if resolved_include.resolved_path is None
+        else resolved_include.resolved_path.as_posix()
+    )
+    return (
+        resolved_include.source,
+        resolved_include.included_path,
+        resolved_include.status,
+        resolved_path,
+    )
+
+
 def detect_make_targets(file_path: Path, relative_path: Path) -> list[CCppBuildTarget]:
     try:
         lines = file_path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -423,16 +581,25 @@ def detect_make_targets(file_path: Path, relative_path: Path) -> list[CCppBuildT
 
     targets: list[CCppBuildTarget] = []
     for line in lines:
-        target_names = parse_make_target_names(line)
-        targets.extend(
-            CCppBuildTarget(source=relative_path, name=target_name)
-            for target_name in target_names
-        )
+        parsed_targets = parse_make_target_line(line)
+        for target_name, object_prerequisites in parsed_targets:
+            targets.append(
+                CCppBuildTarget(
+                    source=relative_path,
+                    name=target_name,
+                    kind="make target",
+                    object_prerequisites=object_prerequisites,
+                )
+            )
 
     return targets
 
 
 def parse_make_target_names(line: str) -> list[str]:
+    return [target_name for target_name, _objects in parse_make_target_line(line)]
+
+
+def parse_make_target_line(line: str) -> list[tuple[str, tuple[str, ...]]]:
     stripped = line.strip()
     if not stripped or stripped.startswith("#") or stripped.startswith("."):
         return []
@@ -442,15 +609,98 @@ def parse_make_target_names(line: str) -> list[str]:
         return []
 
     target_names = target_part.split()
-    return [
+    obvious_target_names = [
         target_name
         for target_name in target_names
         if is_obvious_make_target_name(target_name)
     ]
+    object_prerequisites = parse_make_object_prerequisites(remainder)
+    return [
+        (target_name, object_prerequisites)
+        for target_name in obvious_target_names
+    ]
+
+
+def parse_make_object_prerequisites(remainder: str) -> tuple[str, ...]:
+    prerequisites = remainder.split("#", 1)[0].split()
+    return tuple(
+        sorted(
+            prerequisite
+            for prerequisite in prerequisites
+            if is_object_prerequisite(prerequisite)
+        )
+    )
 
 
 def is_obvious_make_target_name(target_name: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", target_name))
+
+
+def is_object_prerequisite(value: str) -> bool:
+    return (
+        "$" not in value
+        and Path(value).suffix == ".o"
+        and re.fullmatch(r"[A-Za-z0-9_./-]+\.o", value) is not None
+    )
+
+
+def map_make_target_sources(
+    targets: list[CCppBuildTarget],
+    c_cpp_sources: list[Path],
+) -> list[CCppBuildTarget]:
+    source_index = make_object_source_index(c_cpp_sources)
+    mapped_targets: list[CCppBuildTarget] = []
+
+    for target in targets:
+        source_files: set[Path] = set(target.source_files)
+        for object_prerequisite in target.object_prerequisites:
+            source_file = resolve_object_prerequisite(
+                object_prerequisite=object_prerequisite,
+                source_index=source_index,
+            )
+            if source_file is not None:
+                source_files.add(source_file)
+
+        mapped_targets.append(
+            CCppBuildTarget(
+                source=target.source,
+                name=target.name,
+                kind=target.kind,
+                source_files=tuple(sorted(source_files)),
+                object_prerequisites=target.object_prerequisites,
+            )
+        )
+
+    return mapped_targets
+
+
+def make_object_source_index(
+    c_cpp_sources: list[Path],
+) -> dict[str, dict[str, list[Path]]]:
+    by_path: dict[str, list[Path]] = defaultdict(list)
+    by_name: dict[str, list[Path]] = defaultdict(list)
+    for source in c_cpp_sources:
+        object_path = source.with_suffix(".o")
+        by_path[object_path.as_posix()].append(source)
+        by_name[object_path.name].append(source)
+
+    return {"path": by_path, "name": by_name}
+
+
+def resolve_object_prerequisite(
+    object_prerequisite: str,
+    source_index: dict[str, dict[str, list[Path]]],
+) -> Path | None:
+    path_matches = sorted(source_index["path"].get(object_prerequisite, []))
+    if len(path_matches) == 1:
+        return path_matches[0]
+    if len(path_matches) > 1:
+        return None
+
+    name_matches = sorted(source_index["name"].get(Path(object_prerequisite).name, []))
+    if len(name_matches) == 1:
+        return name_matches[0]
+    return None
 
 
 def detect_cmake_targets(file_path: Path, relative_path: Path) -> list[CCppBuildTarget]:
@@ -459,11 +709,7 @@ def detect_cmake_targets(file_path: Path, relative_path: Path) -> list[CCppBuild
     except OSError:
         return []
 
-    return [
-        CCppBuildTarget(source=relative_path, name=target_name)
-        for _target_type, target_name in CMAKE_TARGET_PATTERN.findall(content)
-        if "$" not in target_name
-    ]
+    return parse_cmake_targets(content=content, relative_path=relative_path)
 
 
 def detect_cmake_executable_targets(
@@ -476,9 +722,9 @@ def detect_cmake_executable_targets(
         return []
 
     return [
-        CCppBuildTarget(source=relative_path, name=target_name)
-        for target_type, target_name in CMAKE_TARGET_PATTERN.findall(content)
-        if target_type.lower() == "executable" and "$" not in target_name
+        target
+        for target in parse_cmake_targets(content=content, relative_path=relative_path)
+        if target.kind == "executable"
     ]
 
 
@@ -492,10 +738,73 @@ def detect_cmake_library_targets(
         return []
 
     return [
-        CCppBuildTarget(source=relative_path, name=target_name)
-        for target_type, target_name in CMAKE_TARGET_PATTERN.findall(content)
-        if target_type.lower() == "library" and "$" not in target_name
+        target
+        for target in parse_cmake_targets(content=content, relative_path=relative_path)
+        if target.kind == "library"
     ]
+
+
+def parse_cmake_targets(content: str, relative_path: Path) -> list[CCppBuildTarget]:
+    targets: list[CCppBuildTarget] = []
+    for match in CMAKE_TARGET_CALL_PATTERN.finditer(content):
+        target_type = match.group(1).lower()
+        tokens = tokenize_cmake_call(match.group("body"))
+        if not tokens:
+            continue
+
+        target_name = tokens[0]
+        if "$" in target_name:
+            continue
+
+        source_files = tuple(
+            sorted(
+                source_file
+                for token in tokens[1:]
+                if (source_file := cmake_source_argument(token, relative_path)) is not None
+            )
+        )
+        targets.append(
+            CCppBuildTarget(
+                source=relative_path,
+                name=target_name,
+                kind=target_type,
+                source_files=source_files,
+            )
+        )
+
+    return targets
+
+
+def tokenize_cmake_call(body: str) -> list[str]:
+    tokens: list[str] = []
+    for match in CMAKE_TOKEN_PATTERN.findall(body):
+        token = match.strip()
+        if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
+            token = token[1:-1]
+        tokens.append(token)
+    return tokens
+
+
+def cmake_source_argument(token: str, relative_path: Path) -> Path | None:
+    if (
+        not token
+        or "$" in token
+        or token.startswith("<")
+        or token.upper() in CMAKE_LIBRARY_TYPE_TOKENS
+        or token.upper() in CMAKE_OPTION_TOKENS
+    ):
+        return None
+
+    token_path = Path(token)
+    if token_path.is_absolute() or not is_c_cpp_file_path(token_path):
+        return None
+
+    candidate = relative_path.parent / token_path
+    return normalize_relative_path(candidate)
+
+
+def is_c_cpp_file_path(path: Path) -> bool:
+    return path.suffix.lower() in C_CPP_SOURCE_EXTENSIONS | C_CPP_HEADER_EXTENSIONS
 
 
 def detect_systems_patterns(

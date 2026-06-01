@@ -19,6 +19,7 @@ DETECTION_KIND_ORDER = (
     "C/C++ Project",
     "C/C++ Module",
     "Executable Target",
+    "Library Target",
     "Build Target",
     "C/C++ Systems Pattern",
     "Docker",

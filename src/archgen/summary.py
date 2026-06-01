@@ -62,7 +62,7 @@ def format_summary(summary) -> str:
     lines.append("  Make targets:")
     if summary.c_cpp_build.make_targets:
         lines.extend(
-            f"    {target.source.as_posix()} -> {target.name}"
+            f"    {format_build_target(target)}"
             for target in summary.c_cpp_build.make_targets
         )
     else:
@@ -70,7 +70,7 @@ def format_summary(summary) -> str:
     lines.append("  CMake targets:")
     if summary.c_cpp_build.cmake_targets:
         lines.extend(
-            f"    {target.source.as_posix()} -> {target.name}"
+            f"    {format_build_target(target)}"
             for target in summary.c_cpp_build.cmake_targets
         )
     else:
@@ -109,6 +109,17 @@ def format_summary(summary) -> str:
     else:
         lines.append("    None")
 
+    lines.append("C/C++ resolved includes:")
+    lines.append(f"  Relationships: {len(summary.c_cpp_resolved_includes)}")
+    if summary.c_cpp_resolved_includes:
+        lines.extend(
+            f"    {include.source.as_posix()} -> {include.included_path}"
+            f" [{format_resolved_include_status(include)}]"
+            for include in summary.c_cpp_resolved_includes
+        )
+    else:
+        lines.append("    None")
+
     lines.append("C/C++ systems patterns:")
     if summary.c_cpp_systems_patterns:
         for category in SYSTEMS_CATEGORY_ORDER:
@@ -143,6 +154,20 @@ def format_summary(summary) -> str:
         lines.append("  None")
 
     return "\n".join(lines)
+
+
+def format_resolved_include_status(include) -> str:
+    if include.resolved_path is None:
+        return include.status
+    return f"{include.status}: {include.resolved_path.as_posix()}"
+
+
+def format_build_target(target) -> str:
+    line = f"{target.source.as_posix()} -> {target.name}"
+    if target.source_files:
+        sources = ", ".join(path.as_posix() for path in target.source_files)
+        return f"{line} (sources: {sources})"
+    return line
 
 
 def format_detections(detections: list[Detection]) -> list[str]:

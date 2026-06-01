@@ -5,6 +5,7 @@ from archgen.scanner import (
     CCppBuildTarget,
     CCppCliBinaryEvidence,
     CCppLocalInclude,
+    CCppResolvedInclude,
     format_summary,
     scan_repository,
 )
@@ -24,6 +25,10 @@ def find_detection(
         if detection.kind == kind and detection.name == name:
             return detection
     raise AssertionError(f"Missing detection: {kind} / {name}")
+
+
+def find_detections(detections: list[Detection], kind: str) -> list[Detection]:
+    return [detection for detection in detections if detection.kind == kind]
 
 
 def test_scan_repository_counts_nested_files(tmp_path: Path) -> None:
@@ -187,6 +192,147 @@ def test_scan_repository_detects_local_c_cpp_includes(tmp_path: Path) -> None:
     ]
 
 
+def test_scan_repository_resolves_local_include_next_to_source(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "main.c", '#include "platform.h"\n')
+    touch(tmp_path / "src" / "platform.h")
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.c_cpp_resolved_includes == [
+        CCppResolvedInclude(
+            Path("src/main.c"),
+            "platform.h",
+            Path("src/platform.h"),
+            "resolved",
+        )
+    ]
+
+
+def test_scan_repository_resolves_local_include_through_include_root(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "main.c", '#include "platform.h"\n')
+    touch(tmp_path / "include" / "platform.h")
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.c_cpp_resolved_includes == [
+        CCppResolvedInclude(
+            Path("src/main.c"),
+            "platform.h",
+            Path("include/platform.h"),
+            "resolved",
+        )
+    ]
+
+
+def test_scan_repository_resolves_nested_local_include_through_include_root(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "server.c", '#include "http/parser.h"\n')
+    touch(tmp_path / "include" / "http" / "parser.h")
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.c_cpp_resolved_includes == [
+        CCppResolvedInclude(
+            Path("src/server.c"),
+            "http/parser.h",
+            Path("include/http/parser.h"),
+            "resolved",
+        )
+    ]
+
+
+def test_scan_repository_resolves_unique_basename_local_include(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "main.c", '#include "queue.h"\n')
+    touch(tmp_path / "include" / "collections" / "queue.h")
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.c_cpp_resolved_includes == [
+        CCppResolvedInclude(
+            Path("src/main.c"),
+            "queue.h",
+            Path("include/collections/queue.h"),
+            "resolved",
+        )
+    ]
+
+
+def test_scan_repository_marks_missing_local_include_unresolved(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "main.c", '#include "missing.h"\n')
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.c_cpp_resolved_includes == [
+        CCppResolvedInclude(
+            Path("src/main.c"),
+            "missing.h",
+            None,
+            "unresolved",
+        )
+    ]
+
+
+def test_scan_repository_marks_duplicate_basename_local_include_ambiguous(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "main.c", '#include "queue.h"\n')
+    touch(tmp_path / "include" / "net" / "queue.h")
+    touch(tmp_path / "lib" / "collections" / "queue.h")
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.c_cpp_resolved_includes == [
+        CCppResolvedInclude(
+            Path("src/main.c"),
+            "queue.h",
+            None,
+            "ambiguous",
+        )
+    ]
+
+
+def test_scan_repository_marks_multiple_exact_local_include_matches_ambiguous(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "main.c", '#include "config.h"\n')
+    touch(tmp_path / "src" / "config.h")
+    touch(tmp_path / "include" / "config.h")
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.c_cpp_resolved_includes == [
+        CCppResolvedInclude(
+            Path("src/main.c"),
+            "config.h",
+            None,
+            "ambiguous",
+        )
+    ]
+
+
+def test_scan_repository_resolved_includes_ignore_angle_brackets_and_ignored_dirs(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "main.c", "#include <platform.h>\n")
+    touch(tmp_path / "include" / "platform.h")
+    touch(tmp_path / "build" / "generated.c", '#include "generated.h"\n')
+    touch(tmp_path / "build" / "generated.h")
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.c_cpp_local_includes == []
+    assert summary.c_cpp_resolved_includes == []
+
+
 def test_empty_local_include_summary_prints_none(tmp_path: Path) -> None:
     touch(tmp_path / "src" / "main.cpp", "#include <stdio.h>\n")
 
@@ -194,7 +340,29 @@ def test_empty_local_include_summary_prints_none(tmp_path: Path) -> None:
     output = format_summary(summary)
 
     assert summary.c_cpp_local_includes == []
+    assert summary.c_cpp_resolved_includes == []
     assert "C/C++ local includes:\n  Relationships: 0\n    None" in output
+    assert "C/C++ resolved includes:\n  Relationships: 0\n    None" in output
+
+
+def test_resolved_local_include_summary_prints_statuses(tmp_path: Path) -> None:
+    touch(
+        tmp_path / "src" / "main.c",
+        '#include "platform.h"\n'
+        '#include "missing.h"\n'
+        '#include "queue.h"\n',
+    )
+    touch(tmp_path / "include" / "platform.h")
+    touch(tmp_path / "include" / "net" / "queue.h")
+    touch(tmp_path / "lib" / "collections" / "queue.h")
+
+    summary = scan_repository(tmp_path)
+    output = format_summary(summary)
+
+    assert "C/C++ resolved includes:\n  Relationships: 3" in output
+    assert "    src/main.c -> missing.h [unresolved]" in output
+    assert "    src/main.c -> platform.h [resolved: include/platform.h]" in output
+    assert "    src/main.c -> queue.h [ambiguous]" in output
 
 
 def test_scan_repository_detects_c_cpp_build_files_and_targets(tmp_path: Path) -> None:
@@ -220,20 +388,126 @@ def test_scan_repository_detects_c_cpp_build_files_and_targets(tmp_path: Path) -
     assert summary.c_cpp_build.cmake_files == [Path("src/CMakeLists.txt")]
     assert summary.c_cpp_build.compile_commands_files == [Path("compile_commands.json")]
     assert summary.c_cpp_build.make_targets == [
-        CCppBuildTarget(Path("Makefile"), "all"),
-        CCppBuildTarget(Path("Makefile"), "app"),
-        CCppBuildTarget(Path("Makefile"), "clean"),
-        CCppBuildTarget(Path("Makefile"), "test"),
+        CCppBuildTarget(Path("Makefile"), "all", kind="make target"),
+        CCppBuildTarget(
+            Path("Makefile"),
+            "app",
+            kind="make target",
+            object_prerequisites=("main.o",),
+        ),
+        CCppBuildTarget(Path("Makefile"), "clean", kind="make target"),
+        CCppBuildTarget(
+            Path("Makefile"),
+            "test",
+            kind="make target",
+            object_prerequisites=("main.o",),
+        ),
     ]
     assert summary.c_cpp_build.cmake_targets == [
-        CCppBuildTarget(Path("src/CMakeLists.txt"), "app"),
-        CCppBuildTarget(Path("src/CMakeLists.txt"), "platform"),
+        CCppBuildTarget(
+            Path("src/CMakeLists.txt"),
+            "app",
+            kind="executable",
+            source_files=(Path("src/main.cpp"),),
+        ),
+        CCppBuildTarget(
+            Path("src/CMakeLists.txt"),
+            "platform",
+            kind="library",
+            source_files=(Path("src/platform.cpp"),),
+        ),
     ]
     assert summary.c_cpp_build.cmake_executable_targets == [
-        CCppBuildTarget(Path("src/CMakeLists.txt"), "app"),
+        CCppBuildTarget(
+            Path("src/CMakeLists.txt"),
+            "app",
+            kind="executable",
+            source_files=(Path("src/main.cpp"),),
+        ),
     ]
     assert summary.c_cpp_build.cmake_library_targets == [
-        CCppBuildTarget(Path("src/CMakeLists.txt"), "platform"),
+        CCppBuildTarget(
+            Path("src/CMakeLists.txt"),
+            "platform",
+            kind="library",
+            source_files=(Path("src/platform.cpp"),),
+        ),
+    ]
+
+
+def test_scan_repository_extracts_multiline_cmake_target_sources(
+    tmp_path: Path,
+) -> None:
+    touch(
+        tmp_path / "CMakeLists.txt",
+        "add_executable(app\n"
+        "    src/main.c\n"
+        "    src/queue.c\n"
+        "    ${GENERATED_SOURCES}\n"
+        ")\n"
+        "add_library(core STATIC\n"
+        "    src/core.c\n"
+        "    include/core.h\n"
+        "    $<TARGET_OBJECTS:generated>\n"
+        ")\n",
+    )
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.c_cpp_build.cmake_executable_targets == [
+        CCppBuildTarget(
+            Path("CMakeLists.txt"),
+            "app",
+            kind="executable",
+            source_files=(Path("src/main.c"), Path("src/queue.c")),
+        )
+    ]
+    assert summary.c_cpp_build.cmake_library_targets == [
+        CCppBuildTarget(
+            Path("CMakeLists.txt"),
+            "core",
+            kind="library",
+            source_files=(Path("include/core.h"), Path("src/core.c")),
+        )
+    ]
+
+
+def test_scan_repository_maps_makefile_object_prerequisites_to_unique_sources(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "main.c")
+    touch(tmp_path / "src" / "queue.c")
+    touch(tmp_path / "Makefile", "app: main.o queue.o missing.o\n")
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.c_cpp_build.make_targets == [
+        CCppBuildTarget(
+            Path("Makefile"),
+            "app",
+            kind="make target",
+            source_files=(Path("src/main.c"), Path("src/queue.c")),
+            object_prerequisites=("main.o", "missing.o", "queue.o"),
+        )
+    ]
+
+
+def test_scan_repository_does_not_guess_ambiguous_makefile_object_sources(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "queue.c")
+    touch(tmp_path / "lib" / "queue.cpp")
+    touch(tmp_path / "Makefile", "app: queue.o\n")
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.c_cpp_build.make_targets == [
+        CCppBuildTarget(
+            Path("Makefile"),
+            "app",
+            kind="make target",
+            object_prerequisites=("queue.o",),
+        )
     ]
 
 
@@ -330,7 +604,7 @@ def test_c_cpp_components_detect_modules_executables_build_targets_and_queues(
     touch(tmp_path / "include" / "queue.h")
     touch(tmp_path / "src" / "main.c", "int main(void) { return 0; }\n")
     touch(tmp_path / "Makefile", "app: queue.o main.o\n")
-    touch(tmp_path / "CMakeLists.txt", "add_executable(app main.c queue.c)\n")
+    touch(tmp_path / "CMakeLists.txt", "add_executable(app src/main.c src/queue.c)\n")
 
     summary = scan_repository(tmp_path)
 
@@ -342,9 +616,135 @@ def test_c_cpp_components_detect_modules_executables_build_targets_and_queues(
 
     assert Path("src/main.c") in project.evidence
     assert module.evidence == (Path("include/queue.h"), Path("src/queue.c"))
-    assert executable.evidence == (Path("CMakeLists.txt"),)
-    assert build_target.evidence == (Path("Makefile"),)
+    assert executable.evidence == (
+        Path("CMakeLists.txt"),
+        Path("src/main.c"),
+        Path("src/queue.c"),
+    )
+    assert build_target.evidence == (
+        Path("Makefile"),
+        Path("src/main.c"),
+        Path("src/queue.c"),
+    )
     assert queue.evidence == (Path("src/queue.c"),)
+
+
+def test_c_cpp_module_grouping_detects_exact_source_header_pair(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "queue.c")
+    touch(tmp_path / "queue.h")
+
+    summary = scan_repository(tmp_path)
+
+    modules = find_detections(summary.detections, "C/C++ Module")
+    module = find_detection(summary.detections, "C/C++ Module", "queue module")
+
+    assert modules == [module]
+    assert module.evidence == (Path("queue.c"), Path("queue.h"))
+    assert module.confidence == 0.85
+
+
+def test_c_cpp_module_grouping_pairs_src_and_include_roots(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "foo.c")
+    touch(tmp_path / "include" / "foo.h")
+
+    summary = scan_repository(tmp_path)
+
+    module = find_detection(summary.detections, "C/C++ Module", "foo module")
+
+    assert module.evidence == (Path("include/foo.h"), Path("src/foo.c"))
+    assert module.confidence == 0.85
+
+
+def test_c_cpp_module_grouping_pairs_nested_src_and_include_paths(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "http" / "parser.c")
+    touch(tmp_path / "include" / "http" / "parser.h")
+
+    summary = scan_repository(tmp_path)
+
+    modules = find_detections(summary.detections, "C/C++ Module")
+    module = find_detection(summary.detections, "C/C++ Module", "HTTP parser module")
+
+    assert modules == [module]
+    assert module.evidence == (
+        Path("include/http/parser.h"),
+        Path("src/http/parser.c"),
+    )
+
+
+def test_c_cpp_module_grouping_detects_source_only_systems_and_utility_modules(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "server.c", "socket(); bind(); listen(); accept();\n")
+    touch(tmp_path / "src" / "log.c")
+
+    summary = scan_repository(tmp_path)
+
+    log = find_detection(summary.detections, "C/C++ Module", "log module")
+    server = find_detection(summary.detections, "C/C++ Module", "server module")
+
+    assert log.evidence == (Path("src/log.c"),)
+    assert log.confidence == 0.7
+    assert server.evidence == (Path("src/server.c"),)
+    assert server.confidence == 0.7
+
+
+def test_c_cpp_module_grouping_does_not_create_source_only_main_module(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "main.c", "int main(void) { return 0; }\n")
+
+    summary = scan_repository(tmp_path)
+
+    assert not any(
+        detection.kind == "C/C++ Module" and detection.name == "main module"
+        for detection in summary.detections
+    )
+
+
+def test_c_cpp_module_grouping_detects_header_only_include_modules(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "include" / "config.h")
+
+    summary = scan_repository(tmp_path)
+
+    module = find_detection(summary.detections, "C/C++ Module", "config module")
+
+    assert module.evidence == (Path("include/config.h"),)
+    assert module.confidence == 0.6
+
+
+def test_c_cpp_module_grouping_collapses_cohesive_nested_folders(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "http" / "router.c")
+    touch(tmp_path / "src" / "http" / "parser.c")
+    touch(tmp_path / "include" / "http" / "router.h")
+    touch(tmp_path / "include" / "http" / "parser.h")
+
+    summary = scan_repository(tmp_path)
+
+    modules = find_detections(summary.detections, "C/C++ Module")
+    module = find_detection(summary.detections, "C/C++ Module", "HTTP module")
+
+    assert modules == [module]
+    assert module.evidence == (
+        Path("include/http/parser.h"),
+        Path("include/http/router.h"),
+        Path("src/http/parser.c"),
+        Path("src/http/router.c"),
+    )
+    assert module.confidence == 0.8
+    assert not any(
+        detection.name in {"HTTP parser module", "HTTP router module"}
+        for detection in modules
+    )
 
 
 def test_c_cpp_cli_binary_detected_from_main_argc_argv(tmp_path: Path) -> None:
@@ -543,6 +943,7 @@ def test_empty_repository_summary_has_empty_states(tmp_path: Path) -> None:
     assert summary.c_cpp_project_shape.build_files == []
     assert summary.c_cpp_project_shape.conventional_dirs == []
     assert summary.c_cpp_local_includes == []
+    assert summary.c_cpp_resolved_includes == []
     assert summary.c_cpp_build.makefiles == []
     assert summary.c_cpp_build.cmake_files == []
     assert summary.c_cpp_build.compile_commands_files == []
@@ -581,5 +982,6 @@ def test_empty_repository_summary_has_empty_states(tmp_path: Path) -> None:
         "      None"
     ) in output
     assert "C/C++ local includes:\n  Relationships: 0\n    None" in output
+    assert "C/C++ resolved includes:\n  Relationships: 0\n    None" in output
     assert "C/C++ systems patterns:\n  None" in output
     assert "Detected components:\n  None" in output

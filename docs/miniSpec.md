@@ -416,3 +416,7 @@ Do not implement:
 - System include graphing for angle-bracket includes.
 - Python detector changes unless required to keep tests passing.
 - Web UI or AI/LLM features.
+
+## Future Tasks
+
+- Optional file-level C/C++ module nodes: after folder-level grouping and graph assembly are stable, consider a detail-level option that emits file modules inside cohesive folders.

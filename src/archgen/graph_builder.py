@@ -72,11 +72,13 @@ def build_edges(nodes: list[Node]) -> list[Edge]:
     add_edges_between(
         edges,
         nodes_by_kind["C/C++ Project"],
-        nodes_by_kind["Executable Target"],
+        nodes_by_kind["Executable Target"] + nodes_by_kind["Library Target"],
     )
-    add_edges_between(
+    add_edges_for_shared_evidence(
         edges,
-        nodes_by_kind["Executable Target"],
+        nodes_by_kind["Executable Target"]
+        + nodes_by_kind["Library Target"]
+        + nodes_by_kind["Build Target"],
         nodes_by_kind["C/C++ Module"],
     )
     add_edges_for_shared_evidence(
