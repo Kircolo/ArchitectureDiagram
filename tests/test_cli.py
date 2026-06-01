@@ -8,95 +8,83 @@ from archgen import app
 runner = CliRunner()
 
 
-def test_cli_prints_repository_summary(tmp_path: Path) -> None:
-    (tmp_path / "main.py").write_text("", encoding="utf-8")
-    (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "main.cpp").write_text(
-        '#include "platform.h"\n'
-        "socket(); read(); pthread_create();\n",
-        encoding="utf-8",
+def touch(path: Path, content: str = "") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def test_cli_writes_default_mermaid_output(tmp_path: Path) -> None:
+    touch(
+        tmp_path / "app" / "main.py",
+        "from fastapi import FastAPI\napp = FastAPI()\n",
     )
-    (tmp_path / "src" / "platform.c").write_text("malloc();\n", encoding="utf-8")
-    (tmp_path / "include").mkdir()
-    (tmp_path / "include" / "platform.h").write_text("", encoding="utf-8")
-    (tmp_path / "Makefile").write_text("app: main.o\n", encoding="utf-8")
-    (tmp_path / "src" / "CMakeLists.txt").write_text(
-        "add_executable(app main.cpp)\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "Dockerfile").write_text("", encoding="utf-8")
+    touch(tmp_path / "app" / "db.py", "import psycopg\n")
+    touch(tmp_path / "app" / "cache.py", "import redis\n")
+    touch(tmp_path / "tests" / "test_app.py", "import pytest\n")
 
     result = runner.invoke(app, [str(tmp_path)])
 
     assert result.exit_code == 0
-    assert "Architecture Summary" in result.stdout
+    assert result.stdout == (
+        "Generated docs/architecture.mmd\n"
+        "Detected components: API, Database, Cache, Tests\n"
+    )
+
+    output = tmp_path / "docs" / "architecture.mmd"
+    assert output.read_text(encoding="utf-8").startswith("flowchart TD\n")
+    assert 'api_fastapi_api["FastAPI API"]' in output.read_text(encoding="utf-8")
+    assert 'database_postgresql[("PostgreSQL")]' in output.read_text(encoding="utf-8")
+    assert "api_fastapi_api --> database_postgresql" in output.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_cli_writes_custom_output_relative_to_repository_root(tmp_path: Path) -> None:
+    touch(tmp_path / "app.py", "print('hello')\n")
+
+    result = runner.invoke(
+        app,
+        [str(tmp_path), "--output", "artifacts/architecture.mmd"],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == (
+        "Generated artifacts/architecture.mmd\n"
+        "Detected components: None\n"
+    )
+    assert (tmp_path / "artifacts" / "architecture.mmd").read_text(
+        encoding="utf-8"
+    ) == "flowchart TD\n"
+
+
+def test_cli_dry_run_prints_mermaid_without_writing_file(tmp_path: Path) -> None:
+    touch(
+        tmp_path / "app" / "main.py",
+        "from fastapi import FastAPI\napp = FastAPI()\n",
+    )
+
+    result = runner.invoke(app, [str(tmp_path), "--dry-run"])
+
+    assert result.exit_code == 0
+    assert result.stdout.startswith("flowchart TD\n")
+    assert 'api_fastapi_api["FastAPI API"]' in result.stdout
+    assert "Generated" not in result.stdout
+    assert not (tmp_path / "docs" / "architecture.mmd").exists()
+
+
+def test_cli_verbose_prints_summary_after_success_message(tmp_path: Path) -> None:
+    touch(tmp_path / "main.py")
+
+    result = runner.invoke(app, [str(tmp_path), "--verbose"])
+
+    assert result.exit_code == 0
+    assert result.stdout.startswith(
+        "Generated docs/architecture.mmd\n"
+        "Detected components: None\n\n"
+        "Architecture Summary\n"
+    )
     assert f"Root: {tmp_path.resolve()}" in result.stdout
-    assert "Scanned files: 7" in result.stdout
-    assert "Python: 1" in result.stdout
-    assert "Dockerfile" in result.stdout
-    assert (
-        "C/C++ files:\n"
-        "  Sources: 2\n"
-        "    src/main.cpp\n"
-        "    src/platform.c\n"
-        "  Headers: 1\n"
-        "    include/platform.h"
-    ) in result.stdout
-    assert (
-        "C/C++ project shape:\n"
-        "  Looks like C/C++ project: Yes\n"
-        "  Evidence:\n"
-        "    Source files: 2\n"
-        "    Header files: 1\n"
-        "    Build files:\n"
-        "      Makefile\n"
-        "      src/CMakeLists.txt\n"
-        "    Conventional directories:\n"
-        "      include/\n"
-        "      src/"
-    ) in result.stdout
-    assert (
-        "C/C++ build files:\n"
-        "  Makefiles:\n"
-        "    Makefile\n"
-        "  CMake files:\n"
-        "    src/CMakeLists.txt\n"
-        "  Compile commands:\n"
-        "    None\n"
-        "  Make targets:\n"
-        "    Makefile -> app\n"
-        "  CMake targets:\n"
-        "    src/CMakeLists.txt -> app"
-    ) in result.stdout
-    assert (
-        "C/C++ local includes:\n"
-        "  Relationships: 1\n"
-        "    src/main.cpp -> platform.h"
-    ) in result.stdout
-    assert (
-        "C/C++ systems patterns:\n"
-        "  Sockets:\n"
-        "    src/main.cpp -> socket\n"
-        "  Threads:\n"
-        "    src/main.cpp -> pthread_create\n"
-        "  File I/O:\n"
-        "    src/main.cpp -> read\n"
-        "  Memory/process:\n"
-        "    src/platform.c -> malloc"
-    ) in result.stdout
-    assert "Detected components:" in result.stdout
-    assert (
-        "  C/C++ Project:\n"
-        "    Mixed C/C++ project (confidence: 0.80)"
-    ) in result.stdout
-    assert (
-        "  Executable Target:\n"
-        "    app (confidence: 0.90)"
-    ) in result.stdout
-    assert (
-        "  Docker:\n"
-        "    Docker (confidence: 0.90)"
-    ) in result.stdout
+    assert "Scanned files: 1" in result.stdout
 
 
 def test_cli_rejects_missing_path(tmp_path: Path) -> None:
