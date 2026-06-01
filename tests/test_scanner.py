@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from archgen.detection import Detection
 from archgen.scanner import (
     CCppBuildTarget,
     CCppLocalInclude,
@@ -11,6 +12,17 @@ from archgen.scanner import (
 def touch(path: Path, content: str = "") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def find_detection(
+    detections: list[Detection],
+    kind: str,
+    name: str,
+) -> Detection:
+    for detection in detections:
+        if detection.kind == kind and detection.name == name:
+            return detection
+    raise AssertionError(f"Missing detection: {kind} / {name}")
 
 
 def test_scan_repository_counts_nested_files(tmp_path: Path) -> None:
@@ -27,8 +39,10 @@ def test_scan_repository_ignores_default_directories(tmp_path: Path) -> None:
     touch(tmp_path / "main.py")
     touch(tmp_path / ".git" / "ignored.py")
     touch(tmp_path / ".venv" / "ignored.py")
+    touch(tmp_path / "venv" / "ignored.py")
     touch(tmp_path / "__pycache__" / "ignored.pyc")
     touch(tmp_path / "build" / "ignored.cpp")
+    touch(tmp_path / "coverage" / "ignored.py")
     touch(tmp_path / "vendor" / "ignored.py")
 
     summary = scan_repository(tmp_path)
@@ -59,6 +73,16 @@ def test_scan_repository_detects_languages(tmp_path: Path) -> None:
         "TOML": 1,
         "YAML": 1,
     }
+
+
+def test_env_example_is_notable_but_not_a_language(tmp_path: Path) -> None:
+    touch(tmp_path / ".env.example", "DATABASE_URL=postgresql://example\n")
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.scanned_files == 1
+    assert summary.notable_files == [Path(".env.example")]
+    assert summary.languages == {}
 
 
 def test_scan_repository_detects_c_cpp_sources_and_headers(tmp_path: Path) -> None:
@@ -203,6 +227,12 @@ def test_scan_repository_detects_c_cpp_build_files_and_targets(tmp_path: Path) -
         CCppBuildTarget(Path("src/CMakeLists.txt"), "app"),
         CCppBuildTarget(Path("src/CMakeLists.txt"), "platform"),
     ]
+    assert summary.c_cpp_build.cmake_executable_targets == [
+        CCppBuildTarget(Path("src/CMakeLists.txt"), "app"),
+    ]
+    assert summary.c_cpp_build.cmake_library_targets == [
+        CCppBuildTarget(Path("src/CMakeLists.txt"), "platform"),
+    ]
 
 
 def test_scan_repository_excludes_ignored_c_cpp_build_files(tmp_path: Path) -> None:
@@ -275,6 +305,141 @@ def test_empty_systems_patterns_summary_prints_none(tmp_path: Path) -> None:
     assert "C/C++ systems patterns:\n  None" in output
 
 
+def test_c_cpp_systems_patterns_ignore_comments_strings_and_unrelated_prefixes(
+    tmp_path: Path,
+) -> None:
+    touch(
+        tmp_path / "src" / "main.c",
+        "// socket(); read();\n"
+        'const char *example = "pthread_create(); malloc();";\n'
+        "execute();\n"
+        "int already_readable = 0;\n",
+    )
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.c_cpp_systems_patterns == []
+
+
+def test_c_cpp_components_detect_modules_executables_build_targets_and_queues(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "queue.c", "queue_t q; enqueue(&q); dequeue(&q);\n")
+    touch(tmp_path / "include" / "queue.h")
+    touch(tmp_path / "src" / "main.c", "int main(void) { return 0; }\n")
+    touch(tmp_path / "Makefile", "app: queue.o main.o\n")
+    touch(tmp_path / "CMakeLists.txt", "add_executable(app main.c queue.c)\n")
+
+    summary = scan_repository(tmp_path)
+
+    project = find_detection(summary.detections, "C/C++ Project", "C application")
+    module = find_detection(summary.detections, "C/C++ Module", "queue module")
+    executable = find_detection(summary.detections, "Executable Target", "app")
+    build_target = find_detection(summary.detections, "Build Target", "app")
+    queue = find_detection(summary.detections, "C/C++ Systems Pattern", "Queues")
+
+    assert Path("src/main.c") in project.evidence
+    assert module.evidence == (Path("include/queue.h"), Path("src/queue.c"))
+    assert executable.evidence == (Path("CMakeLists.txt"),)
+    assert build_target.evidence == (Path("Makefile"),)
+    assert queue.evidence == (Path("src/queue.c"),)
+
+
+def test_c_cpp_project_classification_detects_mixed_projects(tmp_path: Path) -> None:
+    touch(tmp_path / "src" / "main.c")
+    touch(tmp_path / "src" / "engine.cpp")
+
+    summary = scan_repository(tmp_path)
+
+    find_detection(summary.detections, "C/C++ Project", "Mixed C/C++ project")
+
+
+def test_c_cpp_project_classification_detects_library_like_projects(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "platform.cpp")
+    touch(tmp_path / "include" / "platform.hpp")
+    touch(tmp_path / "CMakeLists.txt", "add_library(platform STATIC platform.cpp)\n")
+
+    summary = scan_repository(tmp_path)
+
+    find_detection(summary.detections, "C/C++ Project", "Library-like C/C++ project")
+
+
+def test_python_api_components_are_detected_from_framework_patterns(
+    tmp_path: Path,
+) -> None:
+    touch(
+        tmp_path / "app" / "main.py",
+        "from fastapi import FastAPI, APIRouter\n"
+        "app = FastAPI()\n"
+        "router = APIRouter()\n"
+        '@app.get("/health")\n'
+        "def health(): pass\n"
+        "# Flask()\n",
+    )
+
+    summary = scan_repository(tmp_path)
+
+    fastapi = find_detection(summary.detections, "API", "FastAPI API")
+    routes = find_detection(summary.detections, "API", "Python API routes")
+    router = find_detection(summary.detections, "API", "API Router")
+
+    assert fastapi.evidence == (Path("app/main.py"),)
+    assert routes.evidence == (Path("app/main.py"),)
+    assert router.evidence == (Path("app/main.py"),)
+    assert not any(
+        detection.kind == "API" and detection.name == "Flask API"
+        for detection in summary.detections
+    )
+
+
+def test_database_cache_docker_and_test_components_are_detected(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "app" / "db.py", "import sqlalchemy\nimport psycopg\n")
+    touch(tmp_path / "app" / "sqlite_store.py", "import sqlite3\n")
+    touch(tmp_path / "app" / "cache.py", "from redis import Redis\nRedis.from_url(url)\n")
+    touch(tmp_path / "app" / "models.py")
+    touch(tmp_path / "migrations" / "001_init.sql")
+    touch(tmp_path / "alembic" / "env.py")
+    touch(tmp_path / "Dockerfile")
+    touch(tmp_path / "docker-compose.yml")
+    touch(tmp_path / "tests" / "test_app.py", "import pytest\n")
+
+    summary = scan_repository(tmp_path)
+
+    database = find_detection(summary.detections, "Database", "Database")
+    postgres = find_detection(summary.detections, "Database", "PostgreSQL")
+    sqlite = find_detection(summary.detections, "Database", "SQLite")
+    cache = find_detection(summary.detections, "Cache", "Redis Cache")
+    docker = find_detection(summary.detections, "Docker", "Docker")
+    compose = find_detection(summary.detections, "Docker", "Docker Compose")
+    tests = find_detection(summary.detections, "Tests", "Test Suite")
+
+    assert Path("app/models.py") in database.evidence
+    assert Path("migrations") in database.evidence
+    assert Path("alembic") in database.evidence
+    assert postgres.evidence == (Path("app/db.py"),)
+    assert sqlite.evidence == (Path("app/sqlite_store.py"),)
+    assert cache.evidence == (Path("app/cache.py"),)
+    assert docker.evidence == (Path("Dockerfile"),)
+    assert compose.evidence == (Path("docker-compose.yml"),)
+    assert Path("tests") in tests.evidence
+    assert Path("tests/test_app.py") in tests.evidence
+
+
+def test_component_detectors_ignore_default_ignored_directories(tmp_path: Path) -> None:
+    touch(tmp_path / "venv" / "api.py", "from fastapi import FastAPI\napp = FastAPI()\n")
+    touch(tmp_path / "coverage" / "Dockerfile")
+    touch(tmp_path / "build" / "cache.py", "import redis\n")
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.scanned_files == 0
+    assert summary.detections == []
+
+
 def test_scan_repository_detects_notable_files(tmp_path: Path) -> None:
     touch(tmp_path / "Makefile")
     touch(tmp_path / "src" / "CMakeLists.txt")
@@ -311,7 +476,10 @@ def test_empty_repository_summary_has_empty_states(tmp_path: Path) -> None:
     assert summary.c_cpp_build.compile_commands_files == []
     assert summary.c_cpp_build.make_targets == []
     assert summary.c_cpp_build.cmake_targets == []
+    assert summary.c_cpp_build.cmake_executable_targets == []
+    assert summary.c_cpp_build.cmake_library_targets == []
     assert summary.c_cpp_systems_patterns == []
+    assert summary.detections == []
     assert "Languages:\n  None" in output
     assert "Notable files:\n  None" in output
     assert "C/C++ files:\n  Sources: 0\n    None\n  Headers: 0\n    None" in output
@@ -341,3 +509,4 @@ def test_empty_repository_summary_has_empty_states(tmp_path: Path) -> None:
     ) in output
     assert "C/C++ local includes:\n  Relationships: 0\n    None" in output
     assert "C/C++ systems patterns:\n  None" in output
+    assert "Detected components:\n  None" in output

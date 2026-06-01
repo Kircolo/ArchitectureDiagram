@@ -84,6 +84,19 @@ def test_cli_prints_repository_summary(tmp_path: Path) -> None:
         "  Memory/process:\n"
         "    src/platform.c -> malloc"
     ) in result.stdout
+    assert "Detected components:" in result.stdout
+    assert (
+        "  C/C++ Project:\n"
+        "    Mixed C/C++ project (confidence: 0.80)"
+    ) in result.stdout
+    assert (
+        "  Executable Target:\n"
+        "    app (confidence: 0.90)"
+    ) in result.stdout
+    assert (
+        "  Docker:\n"
+        "    Docker (confidence: 0.90)"
+    ) in result.stdout
 
 
 def test_cli_rejects_missing_path(tmp_path: Path) -> None:

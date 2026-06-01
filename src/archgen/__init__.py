@@ -3,7 +3,8 @@ from typing import Annotated
 
 import typer
 
-from archgen.scanner import format_summary, scan_repository
+from archgen.scanner import scan_repository
+from archgen.summary import format_summary
 
 
 app = typer.Typer(add_completion=False, no_args_is_help=False)
