@@ -34,10 +34,40 @@ MODULE_TOKEN_LABELS = {
     "udp": "UDP",
     "xml": "XML",
 }
+SOCKET_LISTENER_PATTERNS = {"accept", "bind", "listen"}
+CLIENT_SOCKET_TOKENS = {"client", "connector", "upstream"}
+WORKER_THREAD_TOKENS = {"pool", "thread", "threads", "threadpool", "worker", "workers"}
+QUEUE_TOKENS = {"dispatcher", "queue", "queues"}
+QUEUE_API_PATTERNS = {"dequeue", "enqueue"}
+FILE_STORAGE_TOKENS = {
+    "audit",
+    "disk",
+    "file",
+    "files",
+    "fs",
+    "log",
+    "logger",
+    "persistence",
+    "persist",
+    "storage",
+    "store",
+}
+PROCESS_MANAGER_PATTERNS = {"exec", "fork", "pipe"}
+ENCODER_TOKENS = {"compress", "compressor", "encode", "encoder"}
+DECODER_TOKENS = {"decode", "decoder", "decompress", "decompressor"}
+BIT_IO_TOKENS = {"bitio", "bitreader", "bitstream", "bitwriter"}
+BIT_IO_PART_TOKENS = {"io", "reader", "stream", "writer"}
 
 
 @dataclass(frozen=True)
 class ModuleCandidate:
+    name: str
+    evidence: tuple[Path, ...]
+    confidence: float
+
+
+@dataclass(frozen=True)
+class SystemComponentCandidate:
     name: str
     evidence: tuple[Path, ...]
     confidence: float
@@ -78,7 +108,13 @@ def detect_c_cpp_components(
             c_cpp_build=c_cpp_build,
         )
     )
-    detections.extend(detect_systems_components(c_cpp_systems_patterns))
+    detections.extend(
+        detect_systems_components(
+            c_cpp_sources=c_cpp_sources,
+            c_cpp_headers=c_cpp_headers,
+            c_cpp_systems_patterns=c_cpp_systems_patterns,
+        )
+    )
 
     return detections
 
@@ -298,6 +334,7 @@ def module_detections(candidates: list[ModuleCandidate]) -> list[Detection]:
         for candidate in sorted(candidates_by_key.values(), key=module_candidate_sort_key)
     ]
 
+
 def group_by_module_key(paths: list[Path]) -> dict[Path, list[Path]]:
     grouped: dict[Path, list[Path]] = defaultdict(list)
     for path in paths:
@@ -436,10 +473,250 @@ def detect_cli_binary_components(
     ]
 
 
-def detect_systems_components(c_cpp_systems_patterns) -> list[Detection]:
+def detect_systems_components(
+    c_cpp_sources: list[Path],
+    c_cpp_headers: list[Path],
+    c_cpp_systems_patterns,
+) -> list[Detection]:
+    evidence_by_key = module_evidence_by_key(
+        c_cpp_sources=c_cpp_sources,
+        c_cpp_headers=c_cpp_headers,
+    )
+    patterns_by_key = systems_patterns_by_key(c_cpp_systems_patterns)
+    sources_by_key_category = systems_sources_by_key_category(c_cpp_systems_patterns)
+    consumed_sources_by_category: defaultdict[str, set[Path]] = defaultdict(set)
+    candidates: list[SystemComponentCandidate] = []
+
+    for key in sorted(evidence_by_key):
+        category_patterns = patterns_by_key.get(key, {})
+        tokens = system_component_tokens(key)
+        socket_patterns = category_patterns.get("Sockets", set())
+        queue_patterns = category_patterns.get("Queues", set())
+        thread_patterns = category_patterns.get("Threads", set())
+        sync_patterns = category_patterns.get("Synchronization", set())
+        file_patterns = category_patterns.get("File I/O", set())
+        memory_process_patterns = category_patterns.get("Memory/process", set())
+
+        if is_socket_listener(socket_patterns):
+            add_system_candidate(
+                candidates=candidates,
+                consumed_sources_by_category=consumed_sources_by_category,
+                sources_by_key_category=sources_by_key_category,
+                evidence=tuple(evidence_by_key[key]),
+                key=key,
+                name="Socket Listener",
+                confidence=0.85,
+                consumed_categories=("Sockets",),
+            )
+
+        if is_client_socket(socket_patterns, tokens):
+            confidence = 0.8 if "socket" in socket_patterns else 0.7
+            add_system_candidate(
+                candidates=candidates,
+                consumed_sources_by_category=consumed_sources_by_category,
+                sources_by_key_category=sources_by_key_category,
+                evidence=tuple(evidence_by_key[key]),
+                key=key,
+                name="Client Socket",
+                confidence=confidence,
+                consumed_categories=("Sockets",),
+            )
+
+        if is_worker_thread_pool(thread_patterns, queue_patterns, tokens):
+            add_system_candidate(
+                candidates=candidates,
+                consumed_sources_by_category=consumed_sources_by_category,
+                sources_by_key_category=sources_by_key_category,
+                evidence=tuple(evidence_by_key[key]),
+                key=key,
+                name="Worker Thread Pool",
+                confidence=0.8,
+                consumed_categories=("Threads",),
+            )
+
+        if is_shared_queue(queue_patterns, tokens):
+            confidence = shared_queue_confidence(queue_patterns)
+            add_system_candidate(
+                candidates=candidates,
+                consumed_sources_by_category=consumed_sources_by_category,
+                sources_by_key_category=sources_by_key_category,
+                evidence=tuple(evidence_by_key[key]),
+                key=key,
+                name="Shared Queue",
+                confidence=confidence,
+                consumed_categories=("Queues",),
+            )
+
+        if sync_patterns:
+            add_system_candidate(
+                candidates=candidates,
+                consumed_sources_by_category=consumed_sources_by_category,
+                sources_by_key_category=sources_by_key_category,
+                evidence=tuple(evidence_by_key[key]),
+                key=key,
+                name="Synchronization Layer",
+                confidence=0.75,
+                consumed_categories=("Synchronization",),
+            )
+
+        if file_patterns and FILE_STORAGE_TOKENS & tokens:
+            add_system_candidate(
+                candidates=candidates,
+                consumed_sources_by_category=consumed_sources_by_category,
+                sources_by_key_category=sources_by_key_category,
+                evidence=tuple(evidence_by_key[key]),
+                key=key,
+                name="File Storage",
+                confidence=0.75,
+                consumed_categories=("File I/O",),
+            )
+
+        if memory_process_patterns & PROCESS_MANAGER_PATTERNS:
+            add_system_candidate(
+                candidates=candidates,
+                consumed_sources_by_category=consumed_sources_by_category,
+                sources_by_key_category=sources_by_key_category,
+                evidence=tuple(evidence_by_key[key]),
+                key=key,
+                name="Process Manager",
+                confidence=0.75,
+                consumed_categories=("Memory/process",),
+            )
+
+        if ENCODER_TOKENS & tokens:
+            candidates.append(
+                SystemComponentCandidate(
+                    name="Encoder",
+                    evidence=tuple(evidence_by_key[key]),
+                    confidence=0.65,
+                )
+            )
+
+        if DECODER_TOKENS & tokens:
+            candidates.append(
+                SystemComponentCandidate(
+                    name="Decoder",
+                    evidence=tuple(evidence_by_key[key]),
+                    confidence=0.65,
+                )
+            )
+
+        if is_bit_io(tokens):
+            candidates.append(
+                SystemComponentCandidate(
+                    name="Bit I/O",
+                    evidence=tuple(evidence_by_key[key]),
+                    confidence=0.65,
+                )
+            )
+
+    detections = system_component_detections(candidates)
+    detections.extend(
+        broad_systems_fallback_detections(
+            c_cpp_systems_patterns=c_cpp_systems_patterns,
+            consumed_sources_by_category=consumed_sources_by_category,
+        )
+    )
+    return sorted(detections, key=lambda item: (item.name, item.evidence))
+
+
+def module_evidence_by_key(
+    c_cpp_sources: list[Path],
+    c_cpp_headers: list[Path],
+) -> dict[Path, tuple[Path, ...]]:
+    grouped: dict[Path, set[Path]] = defaultdict(set)
+    for path in sorted(c_cpp_sources + c_cpp_headers):
+        grouped[module_key(path)].add(path)
+
+    return {
+        key: tuple(sorted(paths))
+        for key, paths in sorted(grouped.items())
+    }
+
+
+def systems_patterns_by_key(c_cpp_systems_patterns) -> dict[Path, dict[str, set[str]]]:
+    grouped: defaultdict[Path, defaultdict[str, set[str]]] = defaultdict(
+        lambda: defaultdict(set)
+    )
+    for match in c_cpp_systems_patterns:
+        grouped[module_key(match.source)][match.category].add(match.pattern)
+
+    return {
+        key: {category: set(patterns) for category, patterns in categories.items()}
+        for key, categories in sorted(grouped.items())
+    }
+
+
+def systems_sources_by_key_category(
+    c_cpp_systems_patterns,
+) -> dict[Path, dict[str, set[Path]]]:
+    grouped: defaultdict[Path, defaultdict[str, set[Path]]] = defaultdict(
+        lambda: defaultdict(set)
+    )
+    for match in c_cpp_systems_patterns:
+        grouped[module_key(match.source)][match.category].add(match.source)
+
+    return {
+        key: {category: set(paths) for category, paths in categories.items()}
+        for key, categories in sorted(grouped.items())
+    }
+
+
+def add_system_candidate(
+    candidates: list[SystemComponentCandidate],
+    consumed_sources_by_category: defaultdict[str, set[Path]],
+    sources_by_key_category: dict[Path, dict[str, set[Path]]],
+    evidence: tuple[Path, ...],
+    key: Path,
+    name: str,
+    confidence: float,
+    consumed_categories: tuple[str, ...],
+) -> None:
+    candidates.append(
+        SystemComponentCandidate(
+            name=name,
+            evidence=evidence,
+            confidence=confidence,
+        )
+    )
+    for category in consumed_categories:
+        consumed_sources_by_category[category].update(
+            sources_by_key_category.get(key, {}).get(category, set())
+        )
+
+
+def system_component_detections(
+    candidates: list[SystemComponentCandidate],
+) -> list[Detection]:
+    evidence_by_name: defaultdict[str, set[Path]] = defaultdict(set)
+    confidence_by_name: dict[str, float] = {}
+
+    for candidate in candidates:
+        evidence_by_name[candidate.name].update(candidate.evidence)
+        confidence_by_name[candidate.name] = max(
+            confidence_by_name.get(candidate.name, 0.0),
+            candidate.confidence,
+        )
+
+    return [
+        Detection(
+            kind="C/C++ Systems Pattern",
+            name=name,
+            evidence=tuple(sorted(evidence_by_name[name])),
+            confidence=confidence_by_name[name],
+        )
+        for name in sorted(evidence_by_name)
+    ]
+
+
+def broad_systems_fallback_detections(
+    c_cpp_systems_patterns,
+    consumed_sources_by_category: defaultdict[str, set[Path]],
+) -> list[Detection]:
     evidence_by_category: dict[str, set[Path]] = defaultdict(set)
     for match in c_cpp_systems_patterns:
-        evidence_by_category[match.category].add(match.source)
+        if match.source not in consumed_sources_by_category[match.category]:
+            evidence_by_category[match.category].add(match.source)
 
     return [
         Detection(
@@ -449,4 +726,57 @@ def detect_systems_components(c_cpp_systems_patterns) -> list[Detection]:
             confidence=0.65,
         )
         for category, paths in sorted(evidence_by_category.items())
+        if paths
     ]
+
+
+def is_socket_listener(socket_patterns: set[str]) -> bool:
+    return "socket" in socket_patterns and bool(socket_patterns & SOCKET_LISTENER_PATTERNS)
+
+
+def is_client_socket(socket_patterns: set[str], tokens: set[str]) -> bool:
+    has_server_socket = bool(socket_patterns & SOCKET_LISTENER_PATTERNS)
+    has_client_name = bool(CLIENT_SOCKET_TOKENS & tokens)
+    return (
+        "connect" in socket_patterns
+        and ("socket" in socket_patterns or has_client_name)
+        and (not has_server_socket or has_client_name)
+    )
+
+
+def is_worker_thread_pool(
+    thread_patterns: set[str],
+    queue_patterns: set[str],
+    tokens: set[str],
+) -> bool:
+    return (
+        "pthread_create" in thread_patterns
+        and (bool(queue_patterns) or bool(WORKER_THREAD_TOKENS & tokens))
+    )
+
+
+def is_shared_queue(queue_patterns: set[str], tokens: set[str]) -> bool:
+    return bool(queue_patterns & QUEUE_API_PATTERNS) or bool(QUEUE_TOKENS & tokens)
+
+
+def shared_queue_confidence(queue_patterns: set[str]) -> float:
+    if queue_patterns & QUEUE_API_PATTERNS:
+        return 0.8
+    if queue_patterns:
+        return 0.7
+    return 0.65
+
+
+def is_bit_io(tokens: set[str]) -> bool:
+    return bool(BIT_IO_TOKENS & tokens) or (
+        "bit" in tokens and bool(BIT_IO_PART_TOKENS & tokens)
+    )
+
+
+def system_component_tokens(key: Path) -> set[str]:
+    tokens: set[str] = set()
+    for part in key.parts:
+        lower_part = part.lower()
+        tokens.add(lower_part)
+        tokens.update(token.lower() for token in split_module_part(lower_part))
+    return tokens

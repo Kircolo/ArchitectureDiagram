@@ -595,6 +595,10 @@ def test_c_cpp_systems_patterns_ignore_comments_strings_and_unrelated_prefixes(
     summary = scan_repository(tmp_path)
 
     assert summary.c_cpp_systems_patterns == []
+    assert not any(
+        detection.kind == "C/C++ Systems Pattern"
+        for detection in summary.detections
+    )
 
 
 def test_c_cpp_components_detect_modules_executables_build_targets_and_queues(
@@ -612,7 +616,7 @@ def test_c_cpp_components_detect_modules_executables_build_targets_and_queues(
     module = find_detection(summary.detections, "C/C++ Module", "queue module")
     executable = find_detection(summary.detections, "Executable Target", "app")
     build_target = find_detection(summary.detections, "Build Target", "app")
-    queue = find_detection(summary.detections, "C/C++ Systems Pattern", "Queues")
+    queue = find_detection(summary.detections, "C/C++ Systems Pattern", "Shared Queue")
 
     assert Path("src/main.c") in project.evidence
     assert module.evidence == (Path("include/queue.h"), Path("src/queue.c"))
@@ -626,7 +630,146 @@ def test_c_cpp_components_detect_modules_executables_build_targets_and_queues(
         Path("src/main.c"),
         Path("src/queue.c"),
     )
-    assert queue.evidence == (Path("src/queue.c"),)
+    assert queue.evidence == (Path("include/queue.h"), Path("src/queue.c"))
+    assert not any(
+        detection.kind == "C/C++ Systems Pattern" and detection.name == "Queues"
+        for detection in summary.detections
+    )
+
+
+def test_c_cpp_systems_components_refine_common_systems_patterns(
+    tmp_path: Path,
+) -> None:
+    touch(
+        tmp_path / "src" / "server.c",
+        "socket(); bind(); listen(); accept();\n",
+    )
+    touch(tmp_path / "include" / "server.h")
+    touch(
+        tmp_path / "src" / "threadpool.c",
+        "pthread_create(); pthread_join(); queue_push();\n",
+    )
+    touch(tmp_path / "include" / "threadpool.h")
+    touch(tmp_path / "src" / "queue.c", "enqueue(); dequeue();\n")
+    touch(tmp_path / "include" / "queue.h")
+    touch(tmp_path / "src" / "storage.c", "fopen(); fread(); fwrite();\n")
+    touch(tmp_path / "include" / "storage.h")
+    touch(tmp_path / "src" / "process.c", "fork(); execl(); pipe(); malloc(); free();\n")
+    touch(tmp_path / "include" / "process.h")
+    touch(
+        tmp_path / "src" / "locks.c",
+        "pthread_mutex_lock(); pthread_cond_signal(); sem_post();\n",
+    )
+    touch(tmp_path / "include" / "locks.h")
+
+    summary = scan_repository(tmp_path)
+
+    listener = find_detection(
+        summary.detections,
+        "C/C++ Systems Pattern",
+        "Socket Listener",
+    )
+    workers = find_detection(
+        summary.detections,
+        "C/C++ Systems Pattern",
+        "Worker Thread Pool",
+    )
+    queue = find_detection(
+        summary.detections,
+        "C/C++ Systems Pattern",
+        "Shared Queue",
+    )
+    storage = find_detection(
+        summary.detections,
+        "C/C++ Systems Pattern",
+        "File Storage",
+    )
+    process = find_detection(
+        summary.detections,
+        "C/C++ Systems Pattern",
+        "Process Manager",
+    )
+    sync = find_detection(
+        summary.detections,
+        "C/C++ Systems Pattern",
+        "Synchronization Layer",
+    )
+
+    assert listener.evidence == (Path("include/server.h"), Path("src/server.c"))
+    assert workers.evidence == (
+        Path("include/threadpool.h"),
+        Path("src/threadpool.c"),
+    )
+    assert queue.evidence == (Path("include/queue.h"), Path("src/queue.c"))
+    assert storage.evidence == (Path("include/storage.h"), Path("src/storage.c"))
+    assert process.evidence == (Path("include/process.h"), Path("src/process.c"))
+    assert sync.evidence == (Path("include/locks.h"), Path("src/locks.c"))
+    assert not any(
+        detection.kind == "C/C++ Systems Pattern"
+        and detection.name
+        in {
+            "Sockets",
+            "Threads",
+            "Synchronization",
+            "Queues",
+            "File I/O",
+            "Memory/process",
+        }
+        for detection in summary.detections
+    )
+
+
+def test_c_cpp_systems_components_detect_client_socket(tmp_path: Path) -> None:
+    touch(tmp_path / "src" / "client.c", "socket(); connect(); send(); recv();\n")
+    touch(tmp_path / "include" / "client.h")
+
+    summary = scan_repository(tmp_path)
+
+    client = find_detection(
+        summary.detections,
+        "C/C++ Systems Pattern",
+        "Client Socket",
+    )
+
+    assert client.evidence == (Path("include/client.h"), Path("src/client.c"))
+    assert not any(
+        detection.kind == "C/C++ Systems Pattern" and detection.name == "Sockets"
+        for detection in summary.detections
+    )
+
+
+def test_c_cpp_systems_components_detect_pipeline_names(tmp_path: Path) -> None:
+    touch(tmp_path / "src" / "encoder.c")
+    touch(tmp_path / "include" / "encoder.h")
+    touch(tmp_path / "src" / "decode.c")
+    touch(tmp_path / "src" / "bitwriter.c")
+
+    summary = scan_repository(tmp_path)
+
+    encoder = find_detection(summary.detections, "C/C++ Systems Pattern", "Encoder")
+    decoder = find_detection(summary.detections, "C/C++ Systems Pattern", "Decoder")
+    bit_io = find_detection(summary.detections, "C/C++ Systems Pattern", "Bit I/O")
+
+    assert encoder.evidence == (Path("include/encoder.h"), Path("src/encoder.c"))
+    assert decoder.evidence == (Path("src/decode.c"),)
+    assert bit_io.evidence == (Path("src/bitwriter.c"),)
+
+
+def test_c_cpp_systems_components_keep_broad_fallback_for_weak_queue_evidence(
+    tmp_path: Path,
+) -> None:
+    touch(tmp_path / "src" / "worker.c", "int queue = 0;\n")
+
+    summary = scan_repository(tmp_path)
+
+    queues = find_detection(summary.detections, "C/C++ Systems Pattern", "Queues")
+
+    assert queues.evidence == (Path("src/worker.c"),)
+    assert not any(
+        detection.kind == "C/C++ Systems Pattern"
+        and detection.name == "Shared Queue"
+        for detection in summary.detections
+    )
 
 
 def test_c_cpp_module_grouping_detects_exact_source_header_pair(

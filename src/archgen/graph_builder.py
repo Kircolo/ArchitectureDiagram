@@ -15,7 +15,7 @@ class SummaryWithDetections(Protocol):
 
 def build_architecture_graph(summary: SummaryWithDetections) -> ArchitectureGraph:
     nodes, warnings = build_nodes(summary.detections)
-    edges = build_edges(nodes)
+    edges = build_edges(nodes, summary)
     return ArchitectureGraph(
         nodes=tuple(sorted(nodes, key=lambda node: node.id)),
         edges=tuple(sorted(set(edges), key=edge_sort_key)),
@@ -50,9 +50,14 @@ def build_nodes(detections: list[Detection]) -> tuple[list[Node], list[str]]:
     return nodes, warnings
 
 
-def build_edges(nodes: list[Node]) -> list[Edge]:
+def build_edges(nodes: list[Node], summary: SummaryWithDetections) -> list[Edge]:
     edges: list[Edge] = []
     nodes_by_kind = group_nodes_by_kind(nodes)
+    target_nodes = (
+        nodes_by_kind["Executable Target"]
+        + nodes_by_kind["Library Target"]
+        + nodes_by_kind["Build Target"]
+    )
 
     add_edges_between(edges, nodes_by_kind["API"], nodes_by_kind["Database"])
     add_edges_between(edges, nodes_by_kind["API"], nodes_by_kind["Cache"])
@@ -76,13 +81,23 @@ def build_edges(nodes: list[Node]) -> list[Edge]:
     )
     add_edges_for_shared_evidence(
         edges,
-        nodes_by_kind["Executable Target"]
-        + nodes_by_kind["Library Target"]
-        + nodes_by_kind["Build Target"],
+        target_nodes,
         nodes_by_kind["C/C++ Module"],
+    )
+    add_include_derived_module_edges(
+        edges,
+        nodes_by_kind["C/C++ Module"],
+        c_cpp_resolved_includes(summary),
     )
     add_edges_for_shared_evidence(
         edges,
+        nodes_by_kind["C/C++ Module"],
+        nodes_by_kind["C/C++ Systems Pattern"],
+        label="uses",
+    )
+    add_target_system_edges(
+        edges,
+        target_nodes,
         nodes_by_kind["C/C++ Module"],
         nodes_by_kind["C/C++ Systems Pattern"],
     )
@@ -101,6 +116,7 @@ def add_edges_for_shared_evidence(
     edges: list[Edge],
     sources: list[Node],
     targets: list[Node],
+    label: str | None = None,
 ) -> None:
     for source in sorted(sources, key=lambda node: node.id):
         source_files = set(source.source_files)
@@ -108,7 +124,83 @@ def add_edges_for_shared_evidence(
             continue
         for target in sorted(targets, key=lambda node: node.id):
             if source.id != target.id and source_files & set(target.source_files):
-                edges.append(Edge(source=source.id, target=target.id))
+                edges.append(Edge(source=source.id, target=target.id, label=label))
+
+
+def add_include_derived_module_edges(
+    edges: list[Edge],
+    modules: list[Node],
+    resolved_includes,
+) -> None:
+    modules_by_file = nodes_by_source_file(modules)
+
+    for include in sorted(
+        resolved_includes,
+        key=lambda item: (
+            item.source.as_posix(),
+            item.included_path,
+            "" if item.resolved_path is None else item.resolved_path.as_posix(),
+            item.status,
+        ),
+    ):
+        if include.status != "resolved" or include.resolved_path is None:
+            continue
+
+        source_modules = modules_by_file.get(include.source.as_posix(), [])
+        target_modules = modules_by_file.get(include.resolved_path.as_posix(), [])
+        for source in sorted(source_modules, key=lambda node: node.id):
+            for target in sorted(target_modules, key=lambda node: node.id):
+                if source.id != target.id:
+                    edges.append(
+                        Edge(
+                            source=source.id,
+                            target=target.id,
+                            label="includes",
+                        )
+                    )
+
+
+def add_target_system_edges(
+    edges: list[Edge],
+    targets: list[Node],
+    modules: list[Node],
+    systems: list[Node],
+) -> None:
+    for target in sorted(targets, key=lambda node: node.id):
+        target_files = set(target.source_files)
+        if not target_files:
+            continue
+
+        owned_module_files = {
+            source_file
+            for module in modules
+            if target_files & set(module.source_files)
+            for source_file in module.source_files
+        }
+        if not owned_module_files:
+            continue
+
+        for system in sorted(systems, key=lambda node: node.id):
+            if target.id != system.id and owned_module_files & set(system.source_files):
+                edges.append(
+                    Edge(
+                        source=target.id,
+                        target=system.id,
+                        label="uses",
+                    )
+                )
+
+
+def nodes_by_source_file(nodes: list[Node]) -> defaultdict[str, list[Node]]:
+    nodes_by_file: defaultdict[str, list[Node]] = defaultdict(list)
+    for node in sorted(nodes, key=lambda item: item.id):
+        for source_file in node.source_files:
+            nodes_by_file[source_file].append(node)
+    return nodes_by_file
+
+
+def c_cpp_resolved_includes(summary: SummaryWithDetections):
+    return getattr(summary, "c_cpp_resolved_includes", ())
 
 
 def group_nodes_by_kind(nodes: list[Node]) -> defaultdict[str, list[Node]]:

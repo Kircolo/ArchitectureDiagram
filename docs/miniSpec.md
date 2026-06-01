@@ -46,44 +46,24 @@ Done means:
 
 ## Current Baseline
 
-The current workspace appears to have Milestones 1 through 3 implemented enough for Milestone 4 work.
+Milestones 4A through 4C are implemented.
 
 Current behavior:
 - `uv run archgen PATH` scans a repository.
 - The CLI writes Mermaid output to `docs/architecture.mmd` by default.
 - The CLI supports `--output`, `--dry-run`, and `--verbose`.
-- The scanner detects:
-  - C/C++ source files
-  - C/C++ header files
-  - C/C++ local quoted includes
-  - Makefile and CMake files
-  - simple Makefile target names
-  - simple CMake target names
-  - CMake executable and library targets
-  - systems-pattern evidence for sockets, threads, synchronization, queues, file I/O, and memory/process hints
-- Component detections exist for:
-  - C/C++ projects
-  - C/C++ modules
-  - executable targets
-  - build targets
-  - C/C++ systems patterns
-  - Python API, database, cache, Docker, and tests
-- A graph model, graph builder, and Mermaid renderer exist.
-- Existing C/C++ graph edges are intentionally conservative and broad.
+- The scanner detects C/C++ files, local quoted includes, resolved local includes, Makefile/CMake targets, target source evidence, CLI binaries, and broad systems-pattern evidence.
+- Component detections include C/C++ projects, grouped C/C++ modules, executable/library/build targets, C/C++ systems patterns, Python API/database/cache/Docker/tests.
+- The graph model, graph builder, and Mermaid renderer exist.
+- Build target to module edges are evidence-based when target source evidence overlaps module evidence.
 
 Important files:
-- `src/archgen/__init__.py`
 - `src/archgen/scanner.py`
-- `src/archgen/detection.py`
-- `src/archgen/summary.py`
 - `src/archgen/detectors/c_cpp.py`
-- `src/archgen/graph.py`
 - `src/archgen/graph_builder.py`
-- `src/archgen/renderers/mermaid.py`
+- `src/archgen/summary.py`
 - `tests/test_scanner.py`
 - `tests/test_graph.py`
-- `tests/test_mermaid.py`
-- `tests/test_cli.py`
 
 ## Milestone 4 Goal
 
@@ -96,140 +76,33 @@ Full spec deliverables:
 - Detection for socket servers, worker threads, queues, locks, file I/O, and encode/decode pipelines.
 - Mermaid diagrams for C/C++ project fixtures.
 
-Do not implement all of Milestone 4 at once. Split it into the parts below.
+Continue Milestone 4 in reviewable parts. 4A-4C are complete; the next agent should start with 4D.
 
-## Milestone 4A - Resolved Local Include Graph
+## Completed: Milestone 4A - 4C
 
-Goal:
-Turn existing local include evidence into resolved file-to-file relationships.
+4A resolved local quoted includes:
+- Added `CCppResolvedInclude`.
+- Resolves local includes through source directory, repo-relative paths, `include/`, `src/`, `lib/`, and unique header basename fallback.
+- Preserves `resolved`, `unresolved`, and `ambiguous` statuses.
+- Shows resolved include evidence in verbose summary.
 
-Current baseline:
-- `scan_repository()` already records `CCppLocalInclude(source, included_path)`.
-- `included_path` is currently just the quoted string from `#include "..."`
-- The graph builder does not yet use include relationships directly.
+4B improved C/C++ module grouping:
+- Pairs source/header files across root, `src/`, `include/`, and nested paths.
+- Emits folder-level modules for cohesive multi-file folders.
+- Adds conservative source-only modules for systems/utility evidence.
+- Adds conservative header-only modules for public `include/` headers.
+- Keeps file-level modules inside cohesive folders as a future detail-level option.
 
-Implementation requirements:
-- Only scan C/C++ source and header files.
-- Only treat quoted includes as local includes.
-- Resolve includes against simple, explainable candidates:
-  - the including file's directory
-  - repository-relative include paths
-  - conventional include roots such as `include/`, `src/`, and `lib/`
-  - unique basename matches among scanned C/C++ headers, if unambiguous
-- Preserve unresolved includes as evidence or warnings instead of failing.
-- Preserve ambiguous includes as warnings instead of guessing.
-- Store resolved include relationships in structured data, preferably a dataclass.
-- Keep paths relative to the repository root.
-- Keep output sorted and stable.
+4C mapped build targets to module evidence:
+- CMake parser extracts literal source/header arguments from simple one-line and multi-line `add_executable()` and `add_library()` calls.
+- Makefile parser maps object prerequisites such as `queue.o` to scanned source files when unambiguous.
+- Build target detections preserve target kind, build file evidence, and source file evidence.
+- Graph target-to-module edges now use shared evidence instead of broad target-to-all-module edges.
 
-Suggested model:
-
-```python
-@dataclass(frozen=True)
-class CCppResolvedInclude:
-    source: Path
-    included_path: str
-    resolved_path: Path | None
-    status: str
-```
-
-Suggested statuses:
-- `resolved`
-- `unresolved`
-- `ambiguous`
-
-Tests to add:
-- resolves includes next to the source file
-- resolves includes through `include/`
-- resolves nested includes such as `#include "http/parser.h"`
-- resolves a unique basename include such as `#include "queue.h"`
-- marks missing includes unresolved
-- marks duplicate basename matches ambiguous
-- ignores angle-bracket system includes
-- ignores files in ignored directories
-
-Milestone 4A acceptance:
-- `uv run pytest` passes.
-- `uv run archgen .` still works.
-- Include resolution is covered by tests.
-- No Mermaid behavior needs to change yet unless it is a small, low-risk addition.
-
-## Milestone 4B - C/C++ Module Grouping
-
-Goal:
-Improve module detection so C/C++ diagrams are organized around useful project modules, not only exact source/header stem pairs.
-
-Current baseline:
-- `detect_source_header_modules()` creates a `C/C++ Module` only when source and header files have the same stem.
-
-Implementation requirements:
-- Group related C/C++ files by conservative heuristics:
-  - source/header stem pairs such as `queue.c` and `queue.h`
-  - paired paths across `src/` and `include/`, such as `src/http/parser.c` and `include/http/parser.h`
-  - source-only modules when the source file has strong module evidence
-  - header-only modules when the header file has strong interface evidence
-  - folder-level modules for cohesive directories such as `src/net/`, `src/http/`, `src/storage/`
-- Preserve evidence files for every module.
-- Keep labels readable, for example `queue module`, `HTTP parser module`, or `storage module`.
-- Keep IDs and output stable.
-- Avoid deep static analysis.
-- Avoid creating excessive nodes for every tiny file if a folder-level module is clearer.
-
-Tests to add:
-- source/header pairs produce one module
-- `src/foo.c` pairs with `include/foo.h`
-- nested `src/http/parser.c` pairs with `include/http/parser.h`
-- source-only files can produce modules when appropriate
-- folder-level grouping is stable
-- module evidence is sorted
-
-Milestone 4B acceptance:
-- `uv run pytest` passes.
-- C/C++ module detections are more useful and stable.
-- Existing graph and Mermaid tests still pass or are intentionally updated.
-
-## Milestone 4C - Build Target to Module Mapping
-
-Goal:
-Map Makefile/CMake targets to the modules and source files they build.
-
-Current baseline:
-- Makefile target names are detected conservatively.
-- CMake target names are detected from `add_executable()` and `add_library()`.
-- Target source files are not fully extracted or mapped to modules.
-- The graph currently adds broad `Executable Target -> C/C++ Module` edges.
-
-Implementation requirements:
-- For CMake:
-  - parse simple one-line and multi-line `add_executable()` calls
-  - parse simple one-line and multi-line `add_library()` calls
-  - extract literal source/header arguments when they are path-like
-  - ignore variables, generator expressions, and complex CMake syntax
-- For Makefile:
-  - keep target parsing conservative
-  - optionally map object prerequisites such as `queue.o` back to `queue.c` or `queue.cpp` when unambiguous
-  - do not try to evaluate Make variables or includes
-- Add structured target information that can preserve:
-  - target name
-  - target kind, such as executable, library, or make target
-  - source file evidence
-  - build file evidence
-- Connect build targets to modules only when there is evidence.
-- Keep fallback behavior conservative if source mapping is unavailable.
-
-Tests to add:
-- CMake executable target extracts literal sources
-- CMake library target extracts literal sources
-- multi-line CMake target extraction works
-- CMake variables are ignored safely
-- Makefile object prerequisites map to source files when unique
-- ambiguous Makefile object mappings do not guess
-- graph edges use target-to-module evidence
-
-Milestone 4C acceptance:
-- `uv run pytest` passes.
-- CMake fixture diagrams show executable/library relationships.
-- Broad target-to-all-module edges are removed or narrowed when better evidence exists.
+Validation at completion:
+- `uv run pytest` passed.
+- `uv run archgen .` worked.
+- Changes were committed and pushed to `origin/main` as `9876821 Implement C/C++ milestone 4A-4C extraction`.
 
 ## Milestone 4D - Systems Component Refinement
 
@@ -294,19 +167,17 @@ Use include, module, build-target, and systems evidence to generate more useful 
 
 Current baseline:
 - Graph nodes are created from detections.
-- Current C/C++ edges are broad:
+- Current C/C++ edges include:
   - `C/C++ Project -> C/C++ Module`
   - `C/C++ Project -> Executable Target`
-  - `Executable Target -> C/C++ Module`
+  - evidence-based target -> module edges for executable/library/build targets
   - `C/C++ Module -> C/C++ Systems Pattern` when evidence files overlap
 
 Implementation requirements:
 - Add include-derived module edges:
   - module A includes module B
   - source/header file A includes file B
-- Add build-derived target edges:
-  - executable target -> module
-  - library target -> module
+- Preserve and refine existing build-derived target edges.
 - Add systems-derived edges:
   - module -> systems component when evidence overlaps
   - target -> systems component when the target owns the module evidence
@@ -376,17 +247,15 @@ Milestone 4F acceptance:
 ## Recommended Implementation Order
 
 Recommended next agent task:
-1. Implement Milestone 4A only.
+1. Implement Milestone 4D only.
 2. Run `uv run pytest`.
 3. Run `uv run archgen .`.
 4. Stop and report what changed.
 
 Then continue in this order:
-1. 4B - module grouping
-2. 4C - build target to module mapping
-3. 4D - systems component refinement
-4. 4E - graph assembly rules
-5. 4F - fixtures and snapshots
+1. 4D - systems component refinement
+2. 4E - graph assembly rules
+3. 4F - fixtures and snapshots
 
 Each sub-milestone should be independently reviewable.
 
