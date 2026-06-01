@@ -1,207 +1,418 @@
-# Architecture Diagram Generator Spec
+# Architecture Diagram Generator Mini Spec
 
-Repo name: archdia
-CLI/package name: archgen
+Repo name: `archdia`
+CLI/package name: `archgen`
 
 Goal:
 Build a Python CLI tool that scans a local repository and generates Mermaid architecture diagrams.
 
-MVP order:
-1. Scanner and file/language summary.
-2. C/C++ file detection.
-3. Local include detection.
-4. Makefile/CMake detection.
-5. Systems-pattern detection: sockets, pthreads, queues, synchronization, file I/O.
-6. Graph model.
-7. Mermaid renderer.
-8. Markdown output.
-9. Python/FastAPI detection.
-10. Database/cache/test/Docker detection.
+This mini spec is a handoff for Milestone 4 from `docs/fullSpec.md`: C/C++ architecture extraction.
 
-Initial command:
-archgen PATH
+## Source of Truth
 
-## Current Baseline: Milestone 1 Complete
+Read and follow:
+- `docs/AGENTS.md`
+- `docs/fullSpec.md`
 
-The project already has a working `archgen` CLI using `uv` and a `src/` layout.
+Relevant full spec sections:
+- `8.2 Component detection`
+- `8.4 Graph generation`
+- `8.5 Mermaid rendering`
+- `14. Example Output for a C Multithreaded HTTP Server Project`
+- `15. Testing Strategy`
+- `16. Milestone 4: C/C++ architecture extraction`
+- `17. MVP Acceptance Criteria`
+
+## Project Constraints
+
+From `docs/AGENTS.md`:
+- Use `uv`.
+- Run tests with `uv run pytest`.
+- Run the CLI with `uv run archgen .`.
+- Prefer small, simple modules.
+- Use dataclasses for core models.
+- Keep detectors modular.
+- Avoid heavy dependencies unless asked.
+- Favor practical heuristics over deep static analysis.
+- Do not add a web UI.
+- Do not add AI/LLM features yet.
+- Keep implementation focused on C/C++ systems projects and Python backend projects.
+
+Done means:
+- tests pass
+- `uv run archgen .` works
+- the diff is small enough to review
+- new behavior is covered by at least one test when practical
+
+## Current Baseline
+
+The current workspace appears to have Milestones 1 through 3 implemented enough for Milestone 4 work.
 
 Current behavior:
-- `uv run archgen .` scans a repository recursively.
-- Common default directories are ignored:
-  - `.git`
-  - `.venv`
-  - `__pycache__`
-  - `.pytest_cache`
-  - `build`
-  - `dist`
-  - `target`
-  - `vendor`
-- Scanned files are counted.
-- Common languages are detected from extensions.
-- Notable files are detected:
-  - `Makefile`
-  - `CMakeLists.txt`
-  - `Dockerfile`
-  - `docker-compose.yml`
-  - `docker-compose.yaml`
-  - `compose.yml`
-  - `compose.yaml`
-  - `compile_commands.json`
-- The CLI prints a stable plain-text summary.
-- Pytest tests exist and pass.
+- `uv run archgen PATH` scans a repository.
+- The CLI writes Mermaid output to `docs/architecture.mmd` by default.
+- The CLI supports `--output`, `--dry-run`, and `--verbose`.
+- The scanner detects:
+  - C/C++ source files
+  - C/C++ header files
+  - C/C++ local quoted includes
+  - Makefile and CMake files
+  - simple Makefile target names
+  - simple CMake target names
+  - CMake executable and library targets
+  - systems-pattern evidence for sockets, threads, synchronization, queues, file I/O, and memory/process hints
+- Component detections exist for:
+  - C/C++ projects
+  - C/C++ modules
+  - executable targets
+  - build targets
+  - C/C++ systems patterns
+  - Python API, database, cache, Docker, and tests
+- A graph model, graph builder, and Mermaid renderer exist.
+- Existing C/C++ graph edges are intentionally conservative and broad.
 
 Important files:
 - `src/archgen/__init__.py`
 - `src/archgen/scanner.py`
+- `src/archgen/detection.py`
+- `src/archgen/summary.py`
+- `src/archgen/detectors/c_cpp.py`
+- `src/archgen/graph.py`
+- `src/archgen/graph_builder.py`
+- `src/archgen/renderers/mermaid.py`
 - `tests/test_scanner.py`
+- `tests/test_graph.py`
+- `tests/test_mermaid.py`
 - `tests/test_cli.py`
 
-Acceptance for current baseline:
-- `uv run pytest`
-- `uv run archgen .`
+## Milestone 4 Goal
 
-## Milestone 2 Breakdown
+Generate useful diagrams for C/C++ systems projects.
 
-The full product spec describes Milestone 2 broadly as "basic component detection."
-For implementation, split that large milestone into smaller sub-milestones so each agent can implement and test one useful slice at a time.
+Full spec deliverables:
+- Include graph extraction from local headers.
+- Makefile/CMake target extraction.
+- Module grouping by folder and filename.
+- Detection for socket servers, worker threads, queues, locks, file I/O, and encode/decode pipelines.
+- Mermaid diagrams for C/C++ project fixtures.
 
-Do not implement all of Milestone 2 at once.
+Do not implement all of Milestone 4 at once. Split it into the parts below.
 
-## Milestone 2A - Explicit C/C++ Source/Header Detection
+## Milestone 4A - Resolved Local Include Graph
 
 Goal:
-Make C/C++ file detection explicit by classifying C/C++ sources separately from headers.
+Turn existing local include evidence into resolved file-to-file relationships.
 
-This is a narrow scanner enhancement. It should not parse file contents or infer architecture yet.
-
-Add source detection for:
-- `.c`
-- `.cc`
-- `.cpp`
-- `.cxx`
-
-Add header detection for:
-- `.h`
-- `.hh`
-- `.hpp`
-- `.hxx`
+Current baseline:
+- `scan_repository()` already records `CCppLocalInclude(source, included_path)`.
+- `included_path` is currently just the quoted string from `#include "..."`
+- The graph builder does not yet use include relationships directly.
 
 Implementation requirements:
-- Extend the scanner summary model with separate C/C++ source and header file lists.
-- Store C/C++ file paths as relative paths.
-- Sort C/C++ file paths for stable output.
-- Keep the existing language count behavior.
-- Keep the existing ignore rules.
-- Do not parse file contents.
-- Do not detect `#include` relationships yet.
-- Do not infer build targets yet.
-- Do not implement systems-pattern detection yet.
-- Do not implement Python/API/database/cache/Docker/test component detection yet.
-- Do not implement Mermaid rendering yet.
-- Do not add a graph model yet.
-
-Expected CLI output should add a section like:
-
-```text
-C/C++ files:
-  Sources: 2
-    src/main.cpp
-    src/platform.c
-  Headers: 1
-    include/platform.h
-```
-
-If no C/C++ files are found, print:
-
-```text
-C/C++ files:
-  Sources: 0
-    None
-  Headers: 0
-    None
-```
-
-Tests to add or update:
-- C/C++ source files are detected.
-- C/C++ header files are detected.
-- C/C++ files inside ignored directories are excluded.
-- CLI output includes the C/C++ section.
-- Existing Milestone 1 behavior still passes.
-
-Milestone 2A acceptance:
-- `uv run pytest` passes.
-- `uv run archgen .` prints the existing summary plus the new C/C++ files section.
-
-## 2B - C/C++ Project Shape Detection
-
-Goal:
-Detect whether a scanned repository looks like a C or C++ project using file types, notable build files, and conventional directories.
-
-Implementation should detect evidence such as:
-- C/C++ source and header files from Milestone 2A.
-- `Makefile`
-- `CMakeLists.txt`
-- `compile_commands.json`
-- conventional directories such as `src/`, `include/`, `lib/`, and `tests/`
-
-Expected output may add a component/evidence-style section, but keep it plain text until a graph model exists.
-
-Do not parse Makefile or CMake targets in this step.
-Do not parse includes in this step.
-Do not implement Mermaid rendering in this step.
-
-## Milestone 2C - Local Include Detection
-
-Goal:
-Detect local C/C++ include relationships using simple static text scanning.
-
-Implementation should detect statements like:
-- `#include "queue.h"`
-- `#include "http/parser.hpp"`
-
-Requirements:
 - Only scan C/C++ source and header files.
 - Only treat quoted includes as local includes.
-- Store relationships as simple data, not a full graph model yet.
-- Report include relationships in plain text or in scanner data for later graph work.
+- Resolve includes against simple, explainable candidates:
+  - the including file's directory
+  - repository-relative include paths
+  - conventional include roots such as `include/`, `src/`, and `lib/`
+  - unique basename matches among scanned C/C++ headers, if unambiguous
+- Preserve unresolved includes as evidence or warnings instead of failing.
+- Preserve ambiguous includes as warnings instead of guessing.
+- Store resolved include relationships in structured data, preferably a dataclass.
+- Keep paths relative to the repository root.
+- Keep output sorted and stable.
 
-Do not attempt compiler-accurate include resolution.
-Do not parse angle-bracket system includes yet.
-Do not build Mermaid output yet.
+Suggested model:
 
-##  Milestone 2D - Makefile/CMake Build Detection
+```python
+@dataclass(frozen=True)
+class CCppResolvedInclude:
+    source: Path
+    included_path: str
+    resolved_path: Path | None
+    status: str
+```
+
+Suggested statuses:
+- `resolved`
+- `unresolved`
+- `ambiguous`
+
+Tests to add:
+- resolves includes next to the source file
+- resolves includes through `include/`
+- resolves nested includes such as `#include "http/parser.h"`
+- resolves a unique basename include such as `#include "queue.h"`
+- marks missing includes unresolved
+- marks duplicate basename matches ambiguous
+- ignores angle-bracket system includes
+- ignores files in ignored directories
+
+Milestone 4A acceptance:
+- `uv run pytest` passes.
+- `uv run archgen .` still works.
+- Include resolution is covered by tests.
+- No Mermaid behavior needs to change yet unless it is a small, low-risk addition.
+
+## Milestone 4B - C/C++ Module Grouping
 
 Goal:
-Detect basic build structure from Makefile and CMake files.
+Improve module detection so C/C++ diagrams are organized around useful project modules, not only exact source/header stem pairs.
 
-Implementation should start simple:
-- Identify presence of `Makefile`.
-- Identify presence of `CMakeLists.txt`.
-- Optionally extract obvious target names using conservative heuristics.
+Current baseline:
+- `detect_source_header_modules()` creates a `C/C++ Module` only when source and header files have the same stem.
+
+Implementation requirements:
+- Group related C/C++ files by conservative heuristics:
+  - source/header stem pairs such as `queue.c` and `queue.h`
+  - paired paths across `src/` and `include/`, such as `src/http/parser.c` and `include/http/parser.h`
+  - source-only modules when the source file has strong module evidence
+  - header-only modules when the header file has strong interface evidence
+  - folder-level modules for cohesive directories such as `src/net/`, `src/http/`, `src/storage/`
+- Preserve evidence files for every module.
+- Keep labels readable, for example `queue module`, `HTTP parser module`, or `storage module`.
+- Keep IDs and output stable.
+- Avoid deep static analysis.
+- Avoid creating excessive nodes for every tiny file if a folder-level module is clearer.
+
+Tests to add:
+- source/header pairs produce one module
+- `src/foo.c` pairs with `include/foo.h`
+- nested `src/http/parser.c` pairs with `include/http/parser.h`
+- source-only files can produce modules when appropriate
+- folder-level grouping is stable
+- module evidence is sorted
+
+Milestone 4B acceptance:
+- `uv run pytest` passes.
+- C/C++ module detections are more useful and stable.
+- Existing graph and Mermaid tests still pass or are intentionally updated.
+
+## Milestone 4C - Build Target to Module Mapping
+
+Goal:
+Map Makefile/CMake targets to the modules and source files they build.
+
+Current baseline:
+- Makefile target names are detected conservatively.
+- CMake target names are detected from `add_executable()` and `add_library()`.
+- Target source files are not fully extracted or mapped to modules.
+- The graph currently adds broad `Executable Target -> C/C++ Module` edges.
+
+Implementation requirements:
+- For CMake:
+  - parse simple one-line and multi-line `add_executable()` calls
+  - parse simple one-line and multi-line `add_library()` calls
+  - extract literal source/header arguments when they are path-like
+  - ignore variables, generator expressions, and complex CMake syntax
+- For Makefile:
+  - keep target parsing conservative
+  - optionally map object prerequisites such as `queue.o` back to `queue.c` or `queue.cpp` when unambiguous
+  - do not try to evaluate Make variables or includes
+- Add structured target information that can preserve:
+  - target name
+  - target kind, such as executable, library, or make target
+  - source file evidence
+  - build file evidence
+- Connect build targets to modules only when there is evidence.
+- Keep fallback behavior conservative if source mapping is unavailable.
+
+Tests to add:
+- CMake executable target extracts literal sources
+- CMake library target extracts literal sources
+- multi-line CMake target extraction works
+- CMake variables are ignored safely
+- Makefile object prerequisites map to source files when unique
+- ambiguous Makefile object mappings do not guess
+- graph edges use target-to-module evidence
+
+Milestone 4C acceptance:
+- `uv run pytest` passes.
+- CMake fixture diagrams show executable/library relationships.
+- Broad target-to-all-module edges are removed or narrowed when better evidence exists.
+
+## Milestone 4D - Systems Component Refinement
+
+Goal:
+Turn broad systems-pattern evidence into architecture components that read like a useful systems diagram.
+
+Current baseline:
+- Systems detections are category-level:
+  - `Sockets`
+  - `Threads`
+  - `Synchronization`
+  - `Queues`
+  - `File I/O`
+  - `Memory/process`
+
+Implementation requirements:
+- Keep the existing broad categories if they are useful, but add or refine component names when evidence supports them.
+- Suggested component labels:
+  - `Socket Listener`
+  - `Client Socket`
+  - `Worker Thread Pool`
+  - `Shared Queue`
+  - `Synchronization Layer`
+  - `File Storage`
+  - `Process Manager`
+  - `Encoder`
+  - `Decoder`
+  - `Bit I/O`
+- Use simple heuristics based on:
+  - API calls
+  - filename and directory names
+  - module names
+  - paired evidence across source/header files
+- Examples:
+  - `socket`, `bind`, `listen`, and `accept` in the same module can imply `Socket Listener`.
+  - `pthread_create` plus queue evidence can imply `Worker Thread Pool`.
+  - queue APIs or filenames can imply `Shared Queue`.
+  - `open`, `read`, `write`, `fopen`, `fread`, or `fwrite` can imply `File Storage` or `File I/O`.
+  - filenames containing `encode`, `decode`, `compress`, `decompress`, `bitreader`, or `bitwriter` can imply pipeline components.
 - Preserve evidence paths.
+- Do not implement call graphs or runtime control-flow analysis.
+- Avoid false precision. Prefer a lower confidence score when evidence is weak.
 
-Do not try to fully evaluate Make syntax or CMake scripts.
-Do not infer runtime architecture yet.
+Tests to add:
+- socket server evidence creates `Socket Listener`
+- pthread worker evidence creates `Worker Thread Pool`
+- queue evidence creates `Shared Queue`
+- file I/O evidence creates file storage or file I/O component
+- encode/decode filenames create pipeline components
+- comments and string literals remain ignored
+- ambiguous weak evidence does not create misleading components
 
-## Milestone 2E - C/C++ Systems-Pattern Detection
+Milestone 4D acceptance:
+- `uv run pytest` passes.
+- C systems diagrams have readable systems component labels.
+- Existing broad evidence remains available in verbose summary or detections.
+
+## Milestone 4E - C/C++ Graph Assembly Rules
 
 Goal:
-Detect common systems-programming concepts through simple content heuristics.
+Use include, module, build-target, and systems evidence to generate more useful C/C++ Mermaid diagrams.
 
-Initial patterns may include:
-- sockets: `socket`, `bind`, `listen`, `accept`, `connect`, `send`, `recv`
-- threads: `pthread_create`, `pthread_join`, `pthread_mutex`, `pthread_cond`
-- synchronization: `sem_wait`, `sem_post`, mutexes, condition variables
-- file I/O: `open`, `read`, `write`, `fopen`, `fread`, `fwrite`
-- memory/process hints: `malloc`, `free`, `fork`, `exec`, `pipe`
+Current baseline:
+- Graph nodes are created from detections.
+- Current C/C++ edges are broad:
+  - `C/C++ Project -> C/C++ Module`
+  - `C/C++ Project -> Executable Target`
+  - `Executable Target -> C/C++ Module`
+  - `C/C++ Module -> C/C++ Systems Pattern` when evidence files overlap
 
-Output should remain evidence-oriented and plain text until graph rendering exists.
-Do not implement deep static analysis or call graphs.
+Implementation requirements:
+- Add include-derived module edges:
+  - module A includes module B
+  - source/header file A includes file B
+- Add build-derived target edges:
+  - executable target -> module
+  - library target -> module
+- Add systems-derived edges:
+  - module -> systems component when evidence overlaps
+  - target -> systems component when the target owns the module evidence
+- Prefer specific evidence-based edges over broad all-to-all edges.
+- Add edge labels only when they improve clarity, such as `includes` or `uses`.
+- Keep graph output deterministic.
+- Keep Mermaid syntax valid.
+- Avoid clutter:
+  - do not render every include if it creates noisy duplicate relationships
+  - de-duplicate edges
+  - collapse file-level detail into module-level edges where possible
 
-Project constraints:
-- Use `uv`.
-- Keep code simple.
-- Keep the `src/` layout.
-- Use pytest.
-- Do not create temporary files outside this repo.
-- If scratch files are needed, place them under this repo and clearly state the path.
+Tests to add:
+- include relationships create module edges
+- build target sources create target-to-module edges
+- systems evidence creates module-to-component edges
+- duplicate edges are removed
+- graph output remains sorted and stable
+- Mermaid output starts with `flowchart TD` and contains expected C/C++ edges
+
+Milestone 4E acceptance:
+- `uv run pytest` passes.
+- Generated C/C++ Mermaid diagrams show specific architecture relationships instead of only broad project-to-module edges.
+
+## Milestone 4F - C/C++ Fixture and Snapshot Coverage
+
+Goal:
+Prove Milestone 4 behavior on small realistic C/C++ fixture projects.
+
+Implementation requirements:
+- Add focused fixtures under `tests/fixtures/`.
+- Keep fixtures small enough to review.
+- Add snapshot-style tests for generated Mermaid where practical.
+- Prefer expected key-node/key-edge assertions if full snapshots become brittle.
+
+Recommended fixtures:
+- `tests/fixtures/c_http_server/`
+  - `src/main.c`
+  - `src/server.c`
+  - `src/http.c`
+  - `src/queue.c`
+  - `src/threadpool.c`
+  - `src/storage.c`
+  - matching headers under `include/`
+  - Makefile or CMakeLists.txt
+- `tests/fixtures/c_cli_encoder_decoder/`
+  - encoder/decoder modules
+  - bit reader/writer modules
+  - file I/O evidence
+  - Makefile
+- `tests/fixtures/cpp_cmake_project/`
+  - CMake executable target
+  - CMake library target
+  - source/header modules
+
+Tests to add:
+- CLI generates Mermaid for each fixture.
+- Mermaid contains expected nodes.
+- Mermaid contains expected architecture edges.
+- Existing Python/backend tests still pass.
+
+Milestone 4F acceptance:
+- `uv run pytest` passes.
+- Fixture diagrams are useful enough to inspect manually.
+- `uv run archgen tests/fixtures/c_http_server --dry-run` prints a valid Mermaid diagram.
+
+## Recommended Implementation Order
+
+Recommended next agent task:
+1. Implement Milestone 4A only.
+2. Run `uv run pytest`.
+3. Run `uv run archgen .`.
+4. Stop and report what changed.
+
+Then continue in this order:
+1. 4B - module grouping
+2. 4C - build target to module mapping
+3. 4D - systems component refinement
+4. 4E - graph assembly rules
+5. 4F - fixtures and snapshots
+
+Each sub-milestone should be independently reviewable.
+
+## Overall Milestone 4 Acceptance
+
+Milestone 4 is complete when:
+- `uv run pytest` passes.
+- `uv run archgen .` works.
+- A C HTTP server fixture produces a Mermaid diagram with recognizable server, listener, parser, queue, worker, and storage components.
+- A C CLI encoder/decoder fixture produces a Mermaid diagram with recognizable binary, encoder/decoder, bit I/O, and file I/O components.
+- A C++ CMake fixture produces a Mermaid diagram with executable/library target relationships.
+- Include-derived module relationships are represented.
+- Build target relationships are represented when evidence exists.
+- Systems-pattern relationships are represented without pretending to be a full call graph.
+- Output remains stable and deterministic.
+
+## Out of Scope for Milestone 4
+
+Do not implement:
+- REST endpoint extraction.
+- Markdown architecture docs.
+- Config overrides.
+- SVG export.
+- Tree-sitter or compiler-accurate parsing.
+- Full C/C++ call graphs.
+- Full Makefile or CMake evaluation.
+- System include graphing for angle-bracket includes.
+- Python detector changes unless required to keep tests passing.
+- Web UI or AI/LLM features.

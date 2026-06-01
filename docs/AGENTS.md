@@ -27,6 +27,11 @@ Run tests:
 Run CLI:
 `uv run archgen .`
 
+## Temporary files
+Do not use `/private/tmp` or other system temp directories for temporary files.
+Create all files, including temporary and scratch files, inside this repository.
+Use `.tmp/` for repo-local temporary files.
+
 ## Coding style
 Prefer small, simple modules.
 Use dataclasses for core models.

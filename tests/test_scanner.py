@@ -3,6 +3,7 @@ from pathlib import Path
 from archgen.detection import Detection
 from archgen.scanner import (
     CCppBuildTarget,
+    CCppCliBinaryEvidence,
     CCppLocalInclude,
     format_summary,
     scan_repository,
@@ -38,6 +39,7 @@ def test_scan_repository_counts_nested_files(tmp_path: Path) -> None:
 def test_scan_repository_ignores_default_directories(tmp_path: Path) -> None:
     touch(tmp_path / "main.py")
     touch(tmp_path / ".git" / "ignored.py")
+    touch(tmp_path / ".tmp" / "ignored.py")
     touch(tmp_path / ".venv" / "ignored.py")
     touch(tmp_path / "venv" / "ignored.py")
     touch(tmp_path / "__pycache__" / "ignored.pyc")
@@ -345,6 +347,76 @@ def test_c_cpp_components_detect_modules_executables_build_targets_and_queues(
     assert queue.evidence == (Path("src/queue.c"),)
 
 
+def test_c_cpp_cli_binary_detected_from_main_argc_argv(tmp_path: Path) -> None:
+    touch(
+        tmp_path / "src" / "main.c",
+        "int main(int argc, char **argv) {\n"
+        "    return argc > 1 && argv[0] != 0;\n"
+        "}\n",
+    )
+
+    summary = scan_repository(tmp_path)
+
+    cli_binary = find_detection(summary.detections, "Executable Target", "CLI Binary")
+
+    assert summary.c_cpp_cli_binary_evidence == [
+        CCppCliBinaryEvidence(Path("src/main.c"), ("argc/argv", "main"))
+    ]
+    assert cli_binary.evidence == (Path("src/main.c"),)
+    assert cli_binary.confidence == 0.75
+
+
+def test_c_cpp_cli_binary_detects_getopt_evidence(tmp_path: Path) -> None:
+    touch(
+        tmp_path / "src" / "tool.c",
+        "#include <unistd.h>\n"
+        "int main(void) {\n"
+        '    return getopt(0, 0, "h") == -1;\n'
+        "}\n",
+    )
+
+    summary = scan_repository(tmp_path)
+
+    cli_binary = find_detection(summary.detections, "Executable Target", "CLI Binary")
+
+    assert summary.c_cpp_cli_binary_evidence == [
+        CCppCliBinaryEvidence(Path("src/tool.c"), ("getopt", "main"))
+    ]
+    assert cli_binary.evidence == (Path("src/tool.c"),)
+    assert cli_binary.confidence == 0.8
+
+
+def test_c_cpp_cli_binary_ignores_main_inside_comments_and_strings(
+    tmp_path: Path,
+) -> None:
+    touch(
+        tmp_path / "src" / "helper.c",
+        "// int main(int argc, char **argv) { return 0; }\n"
+        'const char *example = "int main(int argc, char **argv) { return 0; }";\n'
+        "int helper(void) { return 0; }\n",
+    )
+
+    summary = scan_repository(tmp_path)
+
+    assert summary.c_cpp_cli_binary_evidence == []
+    assert not any(
+        detection.kind == "Executable Target" and detection.name == "CLI Binary"
+        for detection in summary.detections
+    )
+
+
+def test_makefile_targets_are_not_cli_binaries(tmp_path: Path) -> None:
+    touch(tmp_path / "Makefile", "app: main.o\nclean:\n")
+
+    summary = scan_repository(tmp_path)
+
+    find_detection(summary.detections, "Build Target", "app")
+    assert not any(
+        detection.kind == "Executable Target" and detection.name == "CLI Binary"
+        for detection in summary.detections
+    )
+
+
 def test_c_cpp_project_classification_detects_mixed_projects(tmp_path: Path) -> None:
     touch(tmp_path / "src" / "main.c")
     touch(tmp_path / "src" / "engine.cpp")
@@ -479,6 +551,7 @@ def test_empty_repository_summary_has_empty_states(tmp_path: Path) -> None:
     assert summary.c_cpp_build.cmake_executable_targets == []
     assert summary.c_cpp_build.cmake_library_targets == []
     assert summary.c_cpp_systems_patterns == []
+    assert summary.c_cpp_cli_binary_evidence == []
     assert summary.detections == []
     assert "Languages:\n  None" in output
     assert "Notable files:\n  None" in output

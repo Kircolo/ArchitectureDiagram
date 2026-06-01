@@ -21,6 +21,7 @@ from archgen.summary import format_summary
 IGNORED_DIRS = {
     ".git",
     ".pytest_cache",
+    ".tmp",
     ".venv",
     "__pycache__",
     "build",
@@ -64,6 +65,16 @@ CMAKE_TARGET_PATTERN = re.compile(
 C_CPP_COMMENT_OR_STRING_PATTERN = re.compile(
     r"//.*?$|/\*.*?\*/|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'",
     re.MULTILINE | re.DOTALL,
+)
+C_CPP_MAIN_FUNCTION_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])main\s*\((?P<params>[^)]*)\)\s*(?:noexcept\s*)?\{",
+    re.MULTILINE | re.DOTALL,
+)
+C_CPP_OPTION_PARSER_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])getopt(?:_long(?:_only)?)?\s*\(",
+)
+C_CPP_HELP_OPTION_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_-])--help(?![A-Za-z0-9_-])",
 )
 SYSTEMS_PATTERNS = {
     "Sockets": ["socket", "bind", "listen", "accept", "connect", "send", "recv"],
@@ -125,6 +136,12 @@ class CCppSystemsPattern:
 
 
 @dataclass(frozen=True)
+class CCppCliBinaryEvidence:
+    source: Path
+    signals: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class RepositorySummary:
     root: Path
     scanned_files: int
@@ -136,6 +153,7 @@ class RepositorySummary:
     c_cpp_local_includes: list[CCppLocalInclude]
     c_cpp_build: CCppBuildSummary
     c_cpp_systems_patterns: list[CCppSystemsPattern]
+    c_cpp_cli_binary_evidence: list[CCppCliBinaryEvidence]
     detections: list[Detection]
 
 
@@ -155,6 +173,7 @@ def scan_repository(root: Path) -> RepositorySummary:
     c_cpp_cmake_library_targets: list[CCppBuildTarget] = []
     c_cpp_local_includes: list[CCppLocalInclude] = []
     c_cpp_systems_patterns: list[CCppSystemsPattern] = []
+    c_cpp_cli_binary_evidence: list[CCppCliBinaryEvidence] = []
     conventional_dirs: set[Path] = set()
     scanned_paths: list[Path] = []
     scanned_dirs: set[Path] = set()
@@ -231,6 +250,14 @@ def scan_repository(root: Path) -> RepositorySummary:
                     )
                 )
 
+            if is_source:
+                c_cpp_cli_binary_evidence.extend(
+                    detect_cli_binary_evidence(
+                        file_path=file_path,
+                        relative_path=relative_path,
+                    )
+                )
+
     c_cpp_project_shape = detect_c_cpp_project_shape(
         c_cpp_sources=c_cpp_sources,
         c_cpp_headers=c_cpp_headers,
@@ -266,6 +293,10 @@ def scan_repository(root: Path) -> RepositorySummary:
         c_cpp_systems_patterns,
         key=lambda match: (match.category, match.source, match.pattern),
     )
+    c_cpp_cli_binary_evidence = sorted(
+        c_cpp_cli_binary_evidence,
+        key=lambda item: (item.source, item.signals),
+    )
     detections = detect_repository_components(
         root=root,
         scanned_paths=sorted(scanned_paths),
@@ -275,6 +306,7 @@ def scan_repository(root: Path) -> RepositorySummary:
         c_cpp_project_shape=c_cpp_project_shape,
         c_cpp_build=c_cpp_build,
         c_cpp_systems_patterns=c_cpp_systems_patterns,
+        c_cpp_cli_binary_evidence=c_cpp_cli_binary_evidence,
     )
 
     return RepositorySummary(
@@ -288,6 +320,7 @@ def scan_repository(root: Path) -> RepositorySummary:
         c_cpp_local_includes=c_cpp_local_includes,
         c_cpp_build=c_cpp_build,
         c_cpp_systems_patterns=c_cpp_systems_patterns,
+        c_cpp_cli_binary_evidence=c_cpp_cli_binary_evidence,
         detections=detections,
     )
 
@@ -301,6 +334,7 @@ def detect_repository_components(
     c_cpp_project_shape: CCppProjectShape,
     c_cpp_build: CCppBuildSummary,
     c_cpp_systems_patterns: list[CCppSystemsPattern],
+    c_cpp_cli_binary_evidence: list[CCppCliBinaryEvidence],
 ) -> list[Detection]:
     detections: list[Detection] = []
     detections.extend(
@@ -310,6 +344,7 @@ def detect_repository_components(
             c_cpp_project_shape=c_cpp_project_shape,
             c_cpp_build=c_cpp_build,
             c_cpp_systems_patterns=c_cpp_systems_patterns,
+            c_cpp_cli_binary_evidence=c_cpp_cli_binary_evidence,
         )
     )
     detections.extend(detect_python_api_components(root=root, files=scanned_paths))
@@ -488,10 +523,66 @@ def detect_systems_patterns(
     return matches
 
 
+def detect_cli_binary_evidence(
+    file_path: Path,
+    relative_path: Path,
+) -> list[CCppCliBinaryEvidence]:
+    try:
+        content = file_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+
+    code = strip_c_cpp_comments_and_strings(content)
+    comments_removed = strip_c_cpp_comments(content)
+    signals: set[str] = set()
+
+    main_params = C_CPP_MAIN_FUNCTION_PATTERN.findall(code)
+    if main_params:
+        signals.add("main")
+        if any(contains_argc_argv(params) for params in main_params):
+            signals.add("argc/argv")
+
+    if C_CPP_OPTION_PARSER_PATTERN.search(code) is not None:
+        signals.add("getopt")
+
+    if C_CPP_HELP_OPTION_PATTERN.search(comments_removed) is not None:
+        signals.add("--help")
+
+    if not signals:
+        return []
+
+    return [
+        CCppCliBinaryEvidence(
+            source=relative_path,
+            signals=tuple(sorted(signals)),
+        )
+    ]
+
+
 def strip_c_cpp_comments_and_strings(content: str) -> str:
     return C_CPP_COMMENT_OR_STRING_PATTERN.sub(
         lambda match: " " * len(match.group(0)),
         content,
+    )
+
+
+def strip_c_cpp_comments(content: str) -> str:
+    return C_CPP_COMMENT_OR_STRING_PATTERN.sub(
+        lambda match: " " * len(match.group(0))
+        if is_c_cpp_comment(match.group(0))
+        else match.group(0),
+        content,
+    )
+
+
+def is_c_cpp_comment(value: str) -> bool:
+    return value.startswith("//") or value.startswith("/*")
+
+
+def contains_argc_argv(params: str) -> bool:
+    return (
+        re.search(r"(?<![A-Za-z0-9_])argc(?![A-Za-z0-9_])", params) is not None
+        and re.search(r"(?<![A-Za-z0-9_])argv(?![A-Za-z0-9_])", params) is not None
     )
 
 

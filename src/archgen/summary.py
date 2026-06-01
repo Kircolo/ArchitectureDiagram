@@ -127,6 +127,15 @@ def format_summary(summary) -> str:
     else:
         lines.append("  None")
 
+    lines.append("C/C++ CLI binary evidence:")
+    if summary.c_cpp_cli_binary_evidence:
+        lines.extend(
+            f"  {item.source.as_posix()} -> {', '.join(item.signals)}"
+            for item in summary.c_cpp_cli_binary_evidence
+        )
+    else:
+        lines.append("  None")
+
     lines.append("Detected components:")
     if summary.detections:
         lines.extend(format_detections(summary.detections))

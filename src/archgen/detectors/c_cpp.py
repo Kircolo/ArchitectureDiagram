@@ -16,8 +16,11 @@ def detect_c_cpp_components(
     c_cpp_project_shape,
     c_cpp_build,
     c_cpp_systems_patterns,
+    c_cpp_cli_binary_evidence=None,
 ) -> list[Detection]:
     detections: list[Detection] = []
+    if c_cpp_cli_binary_evidence is None:
+        c_cpp_cli_binary_evidence = []
 
     project_detection = detect_project_component(
         c_cpp_sources=c_cpp_sources,
@@ -30,6 +33,12 @@ def detect_c_cpp_components(
 
     detections.extend(detect_source_header_modules(c_cpp_sources, c_cpp_headers))
     detections.extend(detect_build_components(c_cpp_build))
+    detections.extend(
+        detect_cli_binary_components(
+            c_cpp_cli_binary_evidence=c_cpp_cli_binary_evidence,
+            c_cpp_build=c_cpp_build,
+        )
+    )
     detections.extend(detect_systems_components(c_cpp_systems_patterns))
 
     return detections
@@ -133,6 +142,42 @@ def detect_build_components(c_cpp_build) -> list[Detection]:
         )
 
     return detections
+
+
+def detect_cli_binary_components(
+    c_cpp_cli_binary_evidence,
+    c_cpp_build,
+) -> list[Detection]:
+    evidence_paths: set[Path] = set()
+    has_option_parser = False
+
+    for item in c_cpp_cli_binary_evidence:
+        signals = set(item.signals)
+        has_main = "main" in signals
+        has_cli_args = "argc/argv" in signals
+        has_cli_options = bool(signals & {"getopt", "--help"})
+
+        if has_main and (has_cli_args or has_cli_options):
+            evidence_paths.add(item.source)
+            has_option_parser = has_option_parser or has_cli_options
+        elif has_cli_options and c_cpp_build.cmake_executable_targets:
+            evidence_paths.add(item.source)
+            has_option_parser = True
+
+    if not evidence_paths:
+        return []
+
+    evidence_paths.update(target.source for target in c_cpp_build.cmake_executable_targets)
+    confidence = 0.8 if has_option_parser else 0.75
+
+    return [
+        Detection(
+            kind="Executable Target",
+            name="CLI Binary",
+            evidence=tuple(sorted(evidence_paths)),
+            confidence=confidence,
+        )
+    ]
 
 
 def detect_systems_components(c_cpp_systems_patterns) -> list[Detection]:
