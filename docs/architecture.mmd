@@ -1,2 +1,60 @@
 flowchart TD
+    build_target_codec["codec"]
+    c_c_module_tests_fixtures_c_cli_encoder_decoder_include_module["tests fixtures c CLI encoder decoder include module"]
+    c_c_module_tests_fixtures_c_cli_encoder_decoder_src_module["tests fixtures c CLI encoder decoder src module"]
+    c_c_module_tests_fixtures_c_http_server_include_module["tests fixtures c HTTP server include module"]
+    c_c_module_tests_fixtures_c_http_server_src_module["tests fixtures c HTTP server src module"]
+    c_c_module_tests_fixtures_cpp_cmake_project_src_module["tests fixtures cpp cmake project src module"]
+    c_c_project_mixed_c_c_project["Mixed C/C++ project"]
+    c_c_systems_pattern_bit_i_o["Bit I/O"]
+    c_c_systems_pattern_decoder["Decoder"]
+    c_c_systems_pattern_encoder["Encoder"]
+    c_c_systems_pattern_file_storage["File Storage"]
+    c_c_systems_pattern_shared_queue["Shared Queue"]
+    c_c_systems_pattern_socket_listener["Socket Listener"]
+    c_c_systems_pattern_worker_thread_pool["Worker Thread Pool"]
+    executable_target_app["app"]
+    executable_target_cli_binary["CLI Binary"]
+    executable_target_server["server"]
+    library_target_core["core"]
     tests_test_suite["Test Suite"]
+    build_target_codec --> c_c_module_tests_fixtures_c_cli_encoder_decoder_src_module
+    build_target_codec -->|uses| c_c_systems_pattern_bit_i_o
+    build_target_codec -->|uses| c_c_systems_pattern_decoder
+    build_target_codec -->|uses| c_c_systems_pattern_encoder
+    build_target_codec -->|uses| c_c_systems_pattern_file_storage
+    c_c_module_tests_fixtures_c_cli_encoder_decoder_include_module -->|uses| c_c_systems_pattern_bit_i_o
+    c_c_module_tests_fixtures_c_cli_encoder_decoder_include_module -->|uses| c_c_systems_pattern_decoder
+    c_c_module_tests_fixtures_c_cli_encoder_decoder_include_module -->|uses| c_c_systems_pattern_encoder
+    c_c_module_tests_fixtures_c_cli_encoder_decoder_src_module -->|includes| c_c_module_tests_fixtures_c_cli_encoder_decoder_include_module
+    c_c_module_tests_fixtures_c_cli_encoder_decoder_src_module -->|uses| c_c_systems_pattern_bit_i_o
+    c_c_module_tests_fixtures_c_cli_encoder_decoder_src_module -->|uses| c_c_systems_pattern_decoder
+    c_c_module_tests_fixtures_c_cli_encoder_decoder_src_module -->|uses| c_c_systems_pattern_encoder
+    c_c_module_tests_fixtures_c_cli_encoder_decoder_src_module -->|uses| c_c_systems_pattern_file_storage
+    c_c_module_tests_fixtures_c_http_server_include_module -->|uses| c_c_systems_pattern_shared_queue
+    c_c_module_tests_fixtures_c_http_server_src_module -->|includes| c_c_module_tests_fixtures_c_http_server_include_module
+    c_c_module_tests_fixtures_c_http_server_src_module -->|uses| c_c_systems_pattern_file_storage
+    c_c_module_tests_fixtures_c_http_server_src_module -->|uses| c_c_systems_pattern_shared_queue
+    c_c_module_tests_fixtures_c_http_server_src_module -->|uses| c_c_systems_pattern_socket_listener
+    c_c_module_tests_fixtures_c_http_server_src_module -->|uses| c_c_systems_pattern_worker_thread_pool
+    c_c_project_mixed_c_c_project --> c_c_module_tests_fixtures_c_cli_encoder_decoder_include_module
+    c_c_project_mixed_c_c_project --> c_c_module_tests_fixtures_c_cli_encoder_decoder_src_module
+    c_c_project_mixed_c_c_project --> c_c_module_tests_fixtures_c_http_server_include_module
+    c_c_project_mixed_c_c_project --> c_c_module_tests_fixtures_c_http_server_src_module
+    c_c_project_mixed_c_c_project --> c_c_module_tests_fixtures_cpp_cmake_project_src_module
+    c_c_project_mixed_c_c_project --> executable_target_app
+    c_c_project_mixed_c_c_project --> executable_target_cli_binary
+    c_c_project_mixed_c_c_project --> executable_target_server
+    c_c_project_mixed_c_c_project --> library_target_core
+    executable_target_app --> c_c_module_tests_fixtures_cpp_cmake_project_src_module
+    executable_target_cli_binary --> c_c_module_tests_fixtures_c_cli_encoder_decoder_src_module
+    executable_target_cli_binary -->|uses| c_c_systems_pattern_bit_i_o
+    executable_target_cli_binary -->|uses| c_c_systems_pattern_decoder
+    executable_target_cli_binary -->|uses| c_c_systems_pattern_encoder
+    executable_target_cli_binary -->|uses| c_c_systems_pattern_file_storage
+    executable_target_server --> c_c_module_tests_fixtures_c_http_server_src_module
+    executable_target_server -->|uses| c_c_systems_pattern_file_storage
+    executable_target_server -->|uses| c_c_systems_pattern_shared_queue
+    executable_target_server -->|uses| c_c_systems_pattern_socket_listener
+    executable_target_server -->|uses| c_c_systems_pattern_worker_thread_pool
+    tests_test_suite --> c_c_project_mixed_c_c_project
